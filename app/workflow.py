@@ -469,7 +469,8 @@ class WorkflowEngine:
     async def _transmit(self, t: dict, cmd: dict, payload: dict, ack_s: float, done_s: float) -> None:
         """Mark SENT before writing, so a crash after the write is treated as possible motion."""
         with self.store.tx() as conn:
-            conn.execute("UPDATE commands SET state='SENT', session=? WHERE command_id=?", (self.hw.session, cmd["command_id"]))
+            conn.execute("UPDATE commands SET state='SENT', session=?, sent_at=? WHERE command_id=?",
+                         (self.hw.session, self.store.now(), cmd["command_id"]))
         now = self.clock.monotonic()
         self.pending = {"command_id": cmd["command_id"], "kind": cmd["kind"], "channel": cmd["channel"],
                         "txn_id": t["txn_id"], "acked": False, "ack_deadline": now + ack_s, "done_deadline": now + done_s}

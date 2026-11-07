@@ -458,6 +458,10 @@ body.simple .setup-door, body.simple .status-line .notice:not(.alert) { display:
   .brand { grid-area: brand; } .topbar-actions { grid-area: display; } .btn-stop { grid-area: stop; margin-left: .25rem; padding: .5rem 1.1rem; }
   .tabs { grid-area: tabs; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -.25rem; }
   .spacer { display: none; }
+  .sky-notices { flex-wrap: wrap; }
+  .sky-notices .status-line { display: contents; }
+  .notice.calm { padding: .45rem .6rem; }
+  .notice.calm .txt { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .tab { padding: .5rem .8rem; flex: none; }
   .setup-door { margin-left: 0; }
   .greet h1 { font-size: var(--fs-lead); }
@@ -488,3 +492,4 @@ body.simple .setup-door, body.simple .status-line .notice:not(.alert) { display:
 .qty { white-space: nowrap; }
 .swatch-gap { width: 1.15rem; height: 1.15rem; }
 html[data-contrast="high"] .btn-quiet { text-decoration: underline; text-underline-offset: .25em; }
+.stats-wide { grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }

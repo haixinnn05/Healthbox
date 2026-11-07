@@ -5,6 +5,12 @@
 
 const I18N = {
   en: {
+    "chip.cam_pose": "Camera: {pose}",
+    "prefs.notify": "Desktop notifications",
+    "prefs.notify_help": "Shows a notice when a dose is due and this page is in the background.",
+    "prefs.notify_denied": "Notifications are blocked. Allow them in the browser's site settings.",
+    "prefs.notify_unsupported": "This browser can't show desktop notifications.",
+    "notify.body": "{name}. Open DoseGuard to take it.",
     "sky.h6": "6 AM", "sky.h12": "Noon", "sky.h18": "6 PM",
     "due.count": "{n} to take",
     "rx.group2": "Your medicines",
@@ -173,6 +179,12 @@ const I18N = {
   },
 
   es: {
+    "chip.cam_pose": "Cámara: {pose}",
+    "prefs.notify": "Notificaciones de escritorio",
+    "prefs.notify_help": "Muestra un aviso cuando toca una dosis y esta página está en segundo plano.",
+    "prefs.notify_denied": "Las notificaciones están bloqueadas. Permítalas en la configuración del sitio del navegador.",
+    "prefs.notify_unsupported": "Este navegador no puede mostrar notificaciones de escritorio.",
+    "notify.body": "{name}. Abra DoseGuard para tomarla.",
     "sky.h6": "6 a. m.", "sky.h12": "Mediodía", "sky.h18": "6 p. m.",
     "due.count": "{n} para tomar",
     "rx.group2": "Sus medicinas",
@@ -341,6 +353,12 @@ const I18N = {
   },
 
   zh: {
+    "chip.cam_pose": "摄像头：{pose}",
+    "prefs.notify": "桌面通知",
+    "prefs.notify_help": "到服药时间且本页面在后台时显示通知。",
+    "prefs.notify_denied": "通知已被阻止。请在浏览器的网站设置中允许。",
+    "prefs.notify_unsupported": "此浏览器无法显示桌面通知。",
+    "notify.body": "{name}。请打开 DoseGuard 服药。",
     "sky.h6": "早上6点", "sky.h12": "中午", "sky.h18": "傍晚6点",
     "due.count": "服用{n}粒",
     "rx.group2": "您的药",

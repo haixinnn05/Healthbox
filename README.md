@@ -40,6 +40,17 @@ Setup → Dispenser → Hardware simulator: double feed, empty feed, wrong pill 
 command, USB unplug, power cycle, forced door. Dose steps (simulated camera): unknown person, two faces, nobody,
 touching tokens, hidden markers, blur.
 
+### Status and metrics
+- The sky always shows reminder sound, the dispenser (ready, not armed, not connected, needs checking, simulated),
+  and the camera, including the pose during a dose ("Camera: Show the tray"). Problems turn red; on a phone the
+  calm ones shrink to icons.
+- **Setup → Dispenser → How it's running** shows two separate measures from the local record: how late reminders
+  fired (median and max) and how long each cartridge's dispense cycle takes, with how many finished.
+  `GET /api/metrics` returns them as JSON and `/api/export/metrics.csv` as rows. Cycle time runs from the command
+  being written to the controller to `CYCLE_DONE`, which proves motion finished, not that a pill fell.
+- **Desktop notifications** (Display panel, off by default): a notice when a dose becomes due while the page is in
+  the background. Clicking it only brings DoseGuard forward.
+
 ## Look, accessibility and language
 
 The interface is a sky: a band across the top follows the real time of day (dawn, day, dusk, night), today's doses
@@ -158,6 +169,7 @@ app/as_needed.py   as-needed limits (minimum interval, rolling 24 h maximum); re
 app/ai.py          Gemini adapter (label extraction, assistant). No hardware or plan writes
 app/context.py     approved help, redacted facts, offline answers
 app/status.py      the snapshot the page polls every 500 ms
+app/telemetry.py   read-only metrics: reminder delivery delay, dispense cycle duration
 app/virtual_controller.py  simulated controller on a virtual serial port (tests, rehearsal)
 scripts/           bench_check.py (controller conformance + feed trials), tray_cam_check.py (ESP32-CAM),
                    virtual_controller.py, models, markers

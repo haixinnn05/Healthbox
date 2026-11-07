@@ -25,6 +25,7 @@ from .config import ROOT, Settings
 from .context import authoritative_explanation, build_facts, local_answer, select_help
 from .errors import WorkflowError
 from .hardware import HardwareAdapter, make_adapter
+from . import telemetry
 from .plans import confirm_plan
 from .reminders import ReminderService
 from .status import build_status, dose_detail, history, recent_events
@@ -297,6 +298,27 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
             w.writerow([r[k] for k in ("event_id", "ts", "kind", "dose_id", "reminder_id", "txn_id", "reason_code", "details_json", "demo")])
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": "attachment; filename=doseguard-events.csv"})
+
+    @app.get("/api/metrics")
+    async def get_metrics(request: Request):
+        svc = S(request)
+        return telemetry.metrics(svc.store, simulated=svc.hardware.simulated)
+
+    @app.get("/api/export/metrics.csv")
+    async def export_metrics(request: Request):
+        svc = S(request)
+        demo = svc.store.demo
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["metric", "id", "channel", "start_utc", "end_utc", "ms", "outcome", "demo", "simulated_hardware"])
+        sim = int(svc.hardware.simulated)
+        for d in reversed(telemetry.reminder_delays(svc.store, demo, 5000)):
+            w.writerow(["reminder_delivery_delay", d["reminder_id"], "", d["due_at_utc"], d["delivered_at_utc"], d["delay_ms"], "DUE", demo, sim])
+        for c in reversed(telemetry.dispense_cycles(svc.store, demo, 5000)):
+            w.writerow(["dispense_cycle_duration", c["command_id"], c["channel"], c["started_at_utc"], c["finished_at_utc"] or "",
+                        "" if c["duration_ms"] is None else c["duration_ms"], c["outcome"], demo, sim])
+        return Response(buf.getvalue(), media_type="text/csv",
+                        headers={"Content-Disposition": "attachment; filename=doseguard-metrics.csv"})
 
     # ------------------------------------------------------------ reminders
     @app.post("/api/reminders/snooze")

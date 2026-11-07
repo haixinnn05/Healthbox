@@ -17,7 +17,7 @@ function guessLang() {
   const n = (navigator.language || "en").slice(0, 2).toLowerCase();
   return I18N[n] ? n : "en";
 }
-const PREFS = (window.PREFS = Object.assign({ lang: guessLang(), size: 0, contrast: false, simple: false }, loadPrefs()));
+const PREFS = (window.PREFS = Object.assign({ lang: guessLang(), size: 0, contrast: false, simple: false, notify: false }, loadPrefs()));
 
 function savePrefs() {
   try { localStorage.setItem("dg-prefs", JSON.stringify(PREFS)); } catch {}
@@ -282,6 +282,32 @@ function chime(short = false) {
     o.start(t0); o.stop(t0 + 0.65);
   });
 }
+function notifyDue(s) {
+  // Optional desktop notification when a dose becomes due while this tab is in the background.
+  // It only brings the page forward; every action still happens on the page.
+  if (!PREFS.notify || !("Notification" in window) || Notification.permission !== "granted") return;
+  let seen = [];
+  try { seen = JSON.parse(localStorage.getItem("dg-notified") || "[]"); } catch {}
+  const due = s.today.filter((c) => c.reminder.state === "DUE" && c.workflow_state === "NOT_STARTED" && !seen.includes(c.reminder.reminder_id));
+  if (!due.length) return;
+  for (const c of due) seen.push(c.reminder.reminder_id);
+  try { localStorage.setItem("dg-notified", JSON.stringify(seen.slice(-50))); } catch {}
+  if (!document.hidden) return;
+  const n = new Notification(t("due.now"), { body: t("notify.body", { name: due.map((c) => c.label).join(", ") }), tag: "doseguard-due" });
+  n.onclick = () => { window.focus(); go("today"); n.close(); };
+}
+async function setNotify(on) {
+  if (on) {
+    if (!("Notification" in window)) { toast(t("prefs.notify_unsupported"), true); on = false; }
+    else if (Notification.permission !== "granted") {
+      const p = await Notification.requestPermission().catch(() => "denied");
+      if (p !== "granted") { toast(t("prefs.notify_denied"), true); on = false; }
+    }
+  }
+  PREFS.notify = on;
+  savePrefs();
+  renderPrefs();
+}
 function handleSounds(s) {
   let last = 0;
   try { last = Number(localStorage.getItem("dg-last-sound") || 0); } catch {}
@@ -310,6 +336,7 @@ async function poll() {
     S.status = s;
     S.offline = false;
     handleSounds(s);
+    notifyDue(s);
     if (s.due_count > S.lastDue) {
       const c = s.today.find((x) => x.reminder.state === "DUE");
       if (c) announce(`${t("due.now")}: ${c.label}`);
@@ -350,28 +377,36 @@ function rerender(force = false) {
 }
 
 /* ---------------------------------------------------------------- top bar */
-function notice(alert, ic, text, href) {
-  const kids = [icon(ic), h("span", {}, text)];
-  return href ? h("a", { class: `notice ${alert ? "alert" : ""}`, href }, kids) : h("span", { class: `notice ${alert ? "alert" : ""}` }, kids);
+function notice(alert, ic, text, href, calm = false) {
+  // Calm statuses may shrink to an icon on narrow screens; their words stay for screen readers and as a tooltip.
+  const kids = [icon(ic), h("span", { class: "txt" }, text)];
+  const cls = `notice ${alert ? "alert" : ""} ${calm ? "calm" : ""}`;
+  return href ? h("a", { class: cls, href, title: text }, kids) : h("span", { class: cls, title: text }, kids);
 }
 function renderChips() {
-  // Calm by default: the sky shows status only when something needs attention.
+  // Always shows reminder sound, dispenser, camera (with its pose during a dose) and simulated hardware.
+  // Calm words when all is well; alert colour only for a real problem. Simple view keeps only problems.
   const s = S.status;
   const box = $("#chips");
   box.replaceChildren();
   if (S.offline) { box.append(notice(true, "wifi-slash", t("chip.offline"))); return; }
   if (!s) return;
-  const d = s.device;
-  const href = PREFS.simple ? null : "#device";
+  const d = s.device, cam = s.camera, tx = s.workflow.txn;
   const sim = d.simulated ? ` (${t("chip.sim")})` : "";
-  if (!d.connected) box.append(notice(true, "plugs", t("chip.dev_off") + sim, href));
-  else if (d.fault) box.append(notice(true, "first-aid", t("chip.dev_fault") + sim, href));
-  else if (!s.workflow.armed && !PREFS.simple) box.append(notice(false, "pause-circle", t("chip.dev_notarmed") + sim, href));
-  const cam = s.camera;
-  if (!cam.simulated && cam.face && cam.face.error) box.append(notice(true, "camera-slash", t("chip.cam_bad")));
-  // Reminder sound needs one click per session; until then the sky offers it.
-  if (!(S.audio && S.audio.state === "running")) {
-    box.append(h("button", { class: "notice", type: "button", onclick: enableSound }, icon("bell-slash"), h("span", {}, t("chip.sound_off"))));
+  const href = PREFS.simple ? null : "#device";
+  const items = [];
+  if (S.audio && S.audio.state === "running") items.push([false, "bell", t("chip.sound_on"), null, true]);
+  else box.append(h("button", { class: "notice", type: "button", onclick: enableSound }, icon("bell-slash"), h("span", {}, t("chip.sound_off"))));
+  if (!d.connected) items.push([true, "plugs", t("chip.dev_off") + sim, href]);
+  else if (d.fault) items.push([true, "first-aid", t("chip.dev_fault") + sim, href]);
+  else if (!s.workflow.armed) items.push([false, "pause-circle", t("chip.dev_notarmed") + sim, href, true]);
+  else items.push([false, "check-circle", t("chip.dev_ready") + sim, href, true]);
+  const pose = tx && tx.pose ? t("chip.cam_pose", { pose: tx.pose === "FACE" ? t("camera.face") : t("camera.tray") }) : null;
+  if (!cam.simulated && cam.face && cam.face.error) items.push([true, "camera-slash", t("chip.cam_bad")]);
+  else items.push([false, tx && tx.pose === "TRAY" ? "squares-four" : "camera", pose || (cam.simulated ? t("chip.cam_sim") : t("chip.cam_ok")), null, !pose]);
+  for (const [alert, ic, text, link, calm] of items) {
+    if (PREFS.simple && calm) continue;
+    box.append(notice(alert, ic, text, link, !!calm));
   }
 }
 
@@ -392,6 +427,10 @@ function renderPrefs() {
         (v) => { PREFS.size = v; savePrefs(); renderPrefs(); })),
     h("label", { class: "switch" }, h("span", { class: "row" }, icon("circle-half"), t("prefs.contrast")),
       h("input", { type: "checkbox", role: "switch", checked: !!PREFS.contrast, onchange: (e) => { PREFS.contrast = e.target.checked; savePrefs(); } })),
+    h("div", {},
+      h("label", { class: "switch" }, h("span", { class: "row" }, icon("bell-ringing"), t("prefs.notify")),
+        h("input", { type: "checkbox", role: "switch", checked: !!PREFS.notify, onchange: (e) => setNotify(e.target.checked) })),
+      h("p", { class: "switch-help" }, t("prefs.notify_help"))),
     h("div", {},
       h("label", { class: "switch" }, h("span", { class: "row" }, icon("eye"), t("prefs.simple")),
         h("input", { type: "checkbox", role: "switch", checked: !!PREFS.simple, onchange: (e) => { PREFS.simple = e.target.checked; savePrefs(); route(); } })),
@@ -1440,13 +1479,38 @@ const device = {
       h("div", { class: "row", style: "margin-top:1.5rem" },
         h("button", { class: "btn btn-danger", disabled: !!S.busy, onclick: () => act("reset", () => api("/api/device/reset", { inspected: resetChk.checked })).then((x) => x && toast("Recovery sent. Arm it again when ready.")) }, icon("arrow-counter-clockwise"), "Run recovery")));
 
-    const blocks = [summary, h("div", { class: "two" }, armPanel, resetPanel), pillTypesPanel(s)];
+    const blocks = [summary, h("div", { class: "two" }, armPanel, resetPanel), metricsPanel(s), pillTypesPanel(s)];
     if (s.demo_mode) blocks.push(demoPanel(s));
     if (s.simulator) blocks.push(h("section", { class: "panel" }, h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, icon("caret-right"), "Hardware simulator (for testing)"), h("div", { class: "more-body" }, simPanel(s)))));
     blocks.push(h("section", { class: "panel" }, h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, icon("caret-right"), "Developer and demo mode"), h("div", { class: "more-body" }, devPanel(s)))));
     doorMain("device", h("div", { class: "stack" }, blocks));
   },
 };
+
+function metricsPanel(s) {
+  // Two separate measures from the local record: how late reminders fired, and how long each dispense took.
+  const body = h("div", { class: "stats stats-wide" }, h("p", { class: "muted" }, "Loading"));
+  const fmt = (ms) => (ms == null ? "-" : ms < 1000 ? `${ms} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`);
+  const stat = (label, value, sub) => h("div", { class: "stat" }, h("div", { class: "label" }, label), h("div", { class: "value" }, value),
+    sub ? h("div", { class: "label" }, sub) : null);
+  fetch("/api/metrics").then((r) => r.json()).then((m) => {
+    const rd = m.reminder_delay;
+    const cells = [stat("Reminders fired", rd.count ? `${fmt(rd.median_ms)} late (median)` : "None yet",
+      rd.count ? `max ${fmt(rd.max_ms)} over ${rd.count}${rd.late_over_60s ? `, ${rd.late_over_60s} over a minute` : ""}` : null)];
+    for (const ch of ["A", "B"]) {
+      const c = m.dispense_cycles[ch];
+      const problems = c.commands - (c.outcomes.DONE || 0);
+      cells.push(stat(`Cartridge ${ch} cycle`, c.count ? `${fmt(c.median_ms)} (median)` : "None yet",
+        c.commands ? `${c.outcomes.DONE || 0} of ${c.commands} finished${problems ? `, ${problems} not` : ""}${c.count ? `, max ${fmt(c.max_ms)}` : ""}` : null));
+    }
+    body.replaceChildren(...cells);
+  }).catch(() => body.replaceChildren(h("p", { class: "muted" }, "Metrics are not available right now.")));
+  return h("section", { class: "panel" }, h("div", { class: "panel-head" }, h("h3", {}, "How it's running"),
+      h("a", { class: "btn btn-quiet", href: "/api/export/metrics.csv" }, icon("download-simple"), "Download CSV")),
+    h("p", { class: "muted", style: "margin-bottom:.75rem" },
+      `Reminder delay is when a reminder fired minus when it was due. Cycle time runs from the dispense command to the motion finishing; it does not prove a pill fell.${s.device.simulated ? " These come from simulated hardware." : ""}`),
+    body);
+}
 
 function pillTypesPanel(s) {
   const sim = s.camera.simulated;

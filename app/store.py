@@ -247,6 +247,11 @@ class Store:
             # Every dose before as-needed support came from a recurring schedule.
             self.conn.execute("ALTER TABLE doses ADD COLUMN schedule TEXT NOT NULL DEFAULT 'SCHEDULED'")
         self.conn.execute("CREATE INDEX IF NOT EXISTS doses_as_needed ON doses (schedule, entry_key, demo)")
+        cmd_cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(commands)").fetchall()}
+        if "sent_at" not in cmd_cols:
+            # When the command was actually written to the controller (reservation can be earlier,
+            # e.g. cartridge B waits for A's motion). Older rows stay NULL.
+            self.conn.execute("ALTER TABLE commands ADD COLUMN sent_at TEXT")
 
     # -- primitives -------------------------------------------------------
     @contextmanager
