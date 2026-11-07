@@ -1,0 +1,11 @@
+fastapi==0.162.2
+uvicorn[standard]==0.54.0
+pyserial==3.5
+numpy==2.5.4
+opencv-python-headless==5.0.0.93
+python-dotenv==1.2.4
+python-multipart==0.0.33
+httpx==0.28.1
+google-genai==3.0.0
+tzdata==2026.6
+pytest==9.2.0

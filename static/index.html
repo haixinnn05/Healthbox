@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="dg-token" content="__DOSEGUARD_TOKEN__">
+  <meta name="color-scheme" content="light dark">
+  <title>DoseGuard</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar" role="banner">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <span class="brand-name">DoseGuard</span>
+      <span id="demo-badge" class="badge badge-demo" hidden>DEMO MODE</span>
+    </div>
+    <div class="chips" id="chips" aria-live="polite"></div>
+    <div class="topbar-actions">
+      <button class="btn btn-quiet" id="assistant-toggle" aria-expanded="false" aria-controls="assistant">Ask DoseGuard</button>
+      <button class="btn btn-stop" id="stop-btn" aria-label="Stop the device now">STOP</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="sidebar" aria-label="Main">
+      <a href="#today" data-view="today">Today <span class="nav-count" id="nav-due" hidden></span></a>
+      <a href="#schedules" data-view="schedules">Schedules</a>
+      <a href="#setup" data-view="setup">Setup</a>
+      <a href="#verify" data-view="verify">Verification <span class="nav-dot" id="nav-verify" hidden></span></a>
+      <a href="#history" data-view="history">History</a>
+      <a href="#device" data-view="device">Device</a>
+      <div class="sidebar-foot" id="sidebar-foot"></div>
+    </nav>
+
+    <main id="main" class="main" tabindex="-1"></main>
+
+    <aside id="assistant" class="assistant" aria-label="DoseGuard assistant" hidden>
+      <div class="assistant-head">
+        <div>
+          <h2>Ask DoseGuard</h2>
+          <p class="muted small">Explains what the app knows. It can't take any action.</p>
+        </div>
+        <button class="btn btn-quiet btn-icon" id="assistant-close" aria-label="Close assistant">✕</button>
+      </div>
+      <div class="assistant-prompts" id="assistant-prompts"></div>
+      <div class="assistant-log" id="assistant-log" aria-live="polite"></div>
+      <form class="assistant-form" id="assistant-form">
+        <label for="assistant-input" class="sr-only">Question</label>
+        <input id="assistant-input" maxlength="500" autocomplete="off" placeholder="Ask about reminders, blocks or setup">
+        <button class="btn btn-primary" type="submit">Ask</button>
+      </form>
+    </aside>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>
