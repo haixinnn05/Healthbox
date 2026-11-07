@@ -1,0 +1,712 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-07T20:33:31+00:00",
+  "title": "Design System: DoseGuard",
+  "extensions": {
+    "colorMeta": {
+      "ground": {
+        "role": "neutral",
+        "displayName": "Pale Sky Ground",
+        "canonical": "#f4f8fc",
+        "tonalRamp": [
+          "oklch(15% 0.003 248)",
+          "oklch(26% 0.004 248)",
+          "oklch(38% 0.005 248)",
+          "oklch(49% 0.006 248)",
+          "oklch(61% 0.006 248)",
+          "oklch(72% 0.005 248)",
+          "oklch(84% 0.004 248)",
+          "oklch(95% 0.003 248)"
+        ]
+      },
+      "cloud": {
+        "role": "neutral",
+        "displayName": "Cloud White",
+        "canonical": "#fcfdff",
+        "tonalRamp": [
+          "oklch(15% 0.001 265)",
+          "oklch(26% 0.002 265)",
+          "oklch(38% 0.002 265)",
+          "oklch(49% 0.003 265)",
+          "oklch(61% 0.003 265)",
+          "oklch(72% 0.002 265)",
+          "oklch(84% 0.002 265)",
+          "oklch(95% 0.001 265)"
+        ]
+      },
+      "cloud-inset": {
+        "role": "neutral",
+        "displayName": "Quiet Cloud",
+        "canonical": "#eef5fc",
+        "tonalRamp": [
+          "oklch(15% 0.005 248)",
+          "oklch(26% 0.007 248)",
+          "oklch(38% 0.009 248)",
+          "oklch(49% 0.011 248)",
+          "oklch(61% 0.011 248)",
+          "oklch(72% 0.009 248)",
+          "oklch(84% 0.007 248)",
+          "oklch(95% 0.005 248)"
+        ]
+      },
+      "ink": {
+        "role": "primary",
+        "displayName": "Ink Navy",
+        "canonical": "#16304f",
+        "tonalRamp": [
+          "oklch(15% 0.024 254)",
+          "oklch(26% 0.036 254)",
+          "oklch(38% 0.048 254)",
+          "oklch(49% 0.059 254)",
+          "oklch(61% 0.059 254)",
+          "oklch(72% 0.048 254)",
+          "oklch(84% 0.036 254)",
+          "oklch(95% 0.024 254)"
+        ]
+      },
+      "ink-deep": {
+        "role": "primary",
+        "displayName": "Deep Ink (primary hover)",
+        "canonical": "#0f2540",
+        "tonalRamp": [
+          "oklch(15% 0.022 255)",
+          "oklch(26% 0.032 255)",
+          "oklch(38% 0.043 255)",
+          "oklch(49% 0.053 255)",
+          "oklch(61% 0.053 255)",
+          "oklch(72% 0.043 255)",
+          "oklch(84% 0.032 255)",
+          "oklch(95% 0.022 255)"
+        ]
+      },
+      "ink-2": {
+        "role": "neutral",
+        "displayName": "Second Ink",
+        "canonical": "#33547a",
+        "tonalRamp": [
+          "oklch(15% 0.028 253)",
+          "oklch(26% 0.041 253)",
+          "oklch(38% 0.054 253)",
+          "oklch(49% 0.068 253)",
+          "oklch(61% 0.068 253)",
+          "oklch(72% 0.054 253)",
+          "oklch(84% 0.041 253)",
+          "oklch(95% 0.028 253)"
+        ]
+      },
+      "ink-3": {
+        "role": "neutral",
+        "displayName": "Third Ink",
+        "canonical": "#4f6b8c",
+        "tonalRamp": [
+          "oklch(15% 0.023 253)",
+          "oklch(26% 0.034 253)",
+          "oklch(38% 0.046 253)",
+          "oklch(49% 0.057 253)",
+          "oklch(61% 0.057 253)",
+          "oklch(72% 0.046 253)",
+          "oklch(84% 0.034 253)",
+          "oklch(95% 0.023 253)"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "#d9e5f2",
+        "tonalRamp": [
+          "oklch(15% 0.008 250)",
+          "oklch(26% 0.012 250)",
+          "oklch(38% 0.016 250)",
+          "oklch(49% 0.020 250)",
+          "oklch(61% 0.020 250)",
+          "oklch(72% 0.016 250)",
+          "oklch(84% 0.012 250)",
+          "oklch(95% 0.008 250)"
+        ]
+      },
+      "line-2": {
+        "role": "neutral",
+        "displayName": "Field Line",
+        "canonical": "#b7cce3",
+        "tonalRamp": [
+          "oklch(15% 0.015 251)",
+          "oklch(26% 0.022 251)",
+          "oklch(38% 0.029 251)",
+          "oklch(49% 0.036 251)",
+          "oklch(61% 0.036 251)",
+          "oklch(72% 0.029 251)",
+          "oklch(84% 0.022 251)",
+          "oklch(95% 0.015 251)"
+        ]
+      },
+      "sky-dawn-1": {
+        "role": "secondary",
+        "displayName": "Dawn Sky (top)",
+        "canonical": "#a9cbea",
+        "tonalRamp": [
+          "oklch(15% 0.022 246)",
+          "oklch(26% 0.032 246)",
+          "oklch(38% 0.042 246)",
+          "oklch(49% 0.052 246)",
+          "oklch(61% 0.052 246)",
+          "oklch(72% 0.042 246)",
+          "oklch(84% 0.032 246)",
+          "oklch(95% 0.022 246)"
+        ]
+      },
+      "sky-dawn-2": {
+        "role": "secondary",
+        "displayName": "Dawn Sky (lower)",
+        "canonical": "#d6e8f7",
+        "tonalRamp": [
+          "oklch(15% 0.011 243)",
+          "oklch(26% 0.016 243)",
+          "oklch(38% 0.021 243)",
+          "oklch(49% 0.026 243)",
+          "oklch(61% 0.026 243)",
+          "oklch(72% 0.021 243)",
+          "oklch(84% 0.016 243)",
+          "oklch(95% 0.011 243)"
+        ]
+      },
+      "sky-day-1": {
+        "role": "secondary",
+        "displayName": "Day Sky (top)",
+        "canonical": "#8ec2ee",
+        "tonalRamp": [
+          "oklch(15% 0.031 245)",
+          "oklch(26% 0.046 245)",
+          "oklch(38% 0.061 245)",
+          "oklch(49% 0.076 245)",
+          "oklch(61% 0.076 245)",
+          "oklch(72% 0.061 245)",
+          "oklch(84% 0.046 245)",
+          "oklch(95% 0.031 245)"
+        ]
+      },
+      "sky-day-2": {
+        "role": "secondary",
+        "displayName": "Day Sky (lower)",
+        "canonical": "#c9e3f8",
+        "tonalRamp": [
+          "oklch(15% 0.015 242)",
+          "oklch(26% 0.022 242)",
+          "oklch(38% 0.029 242)",
+          "oklch(49% 0.036 242)",
+          "oklch(61% 0.036 242)",
+          "oklch(72% 0.029 242)",
+          "oklch(84% 0.022 242)",
+          "oklch(95% 0.015 242)"
+        ]
+      },
+      "sky-dusk-1": {
+        "role": "secondary",
+        "displayName": "Dusk Periwinkle (top)",
+        "canonical": "#93a9dd",
+        "tonalRamp": [
+          "oklch(15% 0.030 267)",
+          "oklch(26% 0.044 267)",
+          "oklch(38% 0.058 267)",
+          "oklch(49% 0.073 267)",
+          "oklch(61% 0.073 267)",
+          "oklch(72% 0.058 267)",
+          "oklch(84% 0.044 267)",
+          "oklch(95% 0.030 267)"
+        ]
+      },
+      "sky-dusk-2": {
+        "role": "secondary",
+        "displayName": "Dusk Periwinkle (lower)",
+        "canonical": "#cbd6f1",
+        "tonalRamp": [
+          "oklch(15% 0.015 268)",
+          "oklch(26% 0.022 268)",
+          "oklch(38% 0.029 268)",
+          "oklch(49% 0.036 268)",
+          "oklch(61% 0.036 268)",
+          "oklch(72% 0.029 268)",
+          "oklch(84% 0.022 268)",
+          "oklch(95% 0.015 268)"
+        ]
+      },
+      "sky-night-1": {
+        "role": "secondary",
+        "displayName": "Night Navy (top)",
+        "canonical": "#142a4a",
+        "tonalRamp": [
+          "oklch(15% 0.025 258)",
+          "oklch(26% 0.036 258)",
+          "oklch(38% 0.048 258)",
+          "oklch(49% 0.060 258)",
+          "oklch(61% 0.060 258)",
+          "oklch(72% 0.048 258)",
+          "oklch(84% 0.036 258)",
+          "oklch(95% 0.025 258)"
+        ]
+      },
+      "sky-night-2": {
+        "role": "secondary",
+        "displayName": "Night Navy (lower)",
+        "canonical": "#2b4775",
+        "tonalRamp": [
+          "oklch(15% 0.032 260)",
+          "oklch(26% 0.047 260)",
+          "oklch(38% 0.062 260)",
+          "oklch(49% 0.078 260)",
+          "oklch(61% 0.078 260)",
+          "oklch(72% 0.062 260)",
+          "oklch(84% 0.047 260)",
+          "oklch(95% 0.032 260)"
+        ]
+      },
+      "sky-ink-2": {
+        "role": "secondary",
+        "displayName": "Sky Second Ink",
+        "canonical": "#2a4b70",
+        "tonalRamp": [
+          "oklch(15% 0.028 253)",
+          "oklch(26% 0.041 253)",
+          "oklch(38% 0.054 253)",
+          "oklch(49% 0.067 253)",
+          "oklch(61% 0.067 253)",
+          "oklch(72% 0.054 253)",
+          "oklch(84% 0.041 253)",
+          "oklch(95% 0.028 253)"
+        ]
+      },
+      "sky-dusk-ink-2": {
+        "role": "secondary",
+        "displayName": "Dusk Sky Second Ink",
+        "canonical": "#263f69",
+        "tonalRamp": [
+          "oklch(15% 0.030 260)",
+          "oklch(26% 0.044 260)",
+          "oklch(38% 0.058 260)",
+          "oklch(49% 0.072 260)",
+          "oklch(61% 0.072 260)",
+          "oklch(72% 0.058 260)",
+          "oklch(84% 0.044 260)",
+          "oklch(95% 0.030 260)"
+        ]
+      },
+      "sky-night-ink-2": {
+        "role": "secondary",
+        "displayName": "Night Sky Second Ink",
+        "canonical": "#d3e0f0",
+        "tonalRamp": [
+          "oklch(15% 0.010 254)",
+          "oklch(26% 0.014 254)",
+          "oklch(38% 0.019 254)",
+          "oklch(49% 0.024 254)",
+          "oklch(61% 0.024 254)",
+          "oklch(72% 0.019 254)",
+          "oklch(84% 0.014 254)",
+          "oklch(95% 0.010 254)"
+        ]
+      },
+      "sun-light": {
+        "role": "tertiary",
+        "displayName": "Sun Highlight",
+        "canonical": "#fff1c9",
+        "tonalRamp": [
+          "oklch(15% 0.020 91)",
+          "oklch(26% 0.030 91)",
+          "oklch(38% 0.040 91)",
+          "oklch(49% 0.049 91)",
+          "oklch(61% 0.049 91)",
+          "oklch(72% 0.040 91)",
+          "oklch(84% 0.030 91)",
+          "oklch(95% 0.020 91)"
+        ]
+      },
+      "sun": {
+        "role": "tertiary",
+        "displayName": "Warm Sun",
+        "canonical": "#ffd27a",
+        "tonalRamp": [
+          "oklch(15% 0.045 83)",
+          "oklch(26% 0.066 83)",
+          "oklch(38% 0.087 83)",
+          "oklch(49% 0.108 83)",
+          "oklch(61% 0.108 83)",
+          "oklch(72% 0.087 83)",
+          "oklch(84% 0.066 83)",
+          "oklch(95% 0.045 83)"
+        ]
+      },
+      "sun-deep": {
+        "role": "tertiary",
+        "displayName": "Sun Rim",
+        "canonical": "#e9a93a",
+        "tonalRamp": [
+          "oklch(15% 0.054 77)",
+          "oklch(26% 0.079 77)",
+          "oklch(38% 0.105 77)",
+          "oklch(49% 0.130 77)",
+          "oklch(61% 0.130 77)",
+          "oklch(72% 0.105 77)",
+          "oklch(84% 0.079 77)",
+          "oklch(95% 0.054 77)"
+        ]
+      },
+      "alert": {
+        "role": "alert",
+        "displayName": "Alert Red",
+        "canonical": "#b42318",
+        "tonalRamp": [
+          "oklch(15% 0.060 30)",
+          "oklch(26% 0.089 30)",
+          "oklch(38% 0.117 30)",
+          "oklch(49% 0.146 30)",
+          "oklch(61% 0.146 30)",
+          "oklch(72% 0.117 30)",
+          "oklch(84% 0.089 30)",
+          "oklch(95% 0.060 30)"
+        ]
+      },
+      "alert-bg": {
+        "role": "alert",
+        "displayName": "Alert Wash",
+        "canonical": "#fdeceb",
+        "tonalRamp": [
+          "oklch(15% 0.007 22)",
+          "oklch(26% 0.010 22)",
+          "oklch(38% 0.014 22)",
+          "oklch(49% 0.017 22)",
+          "oklch(61% 0.017 22)",
+          "oklch(72% 0.014 22)",
+          "oklch(84% 0.010 22)",
+          "oklch(95% 0.007 22)"
+        ]
+      },
+      "alert-line": {
+        "role": "alert",
+        "displayName": "Alert Line",
+        "canonical": "#f3c4bf",
+        "tonalRamp": [
+          "oklch(15% 0.021 25)",
+          "oklch(26% 0.030 25)",
+          "oklch(38% 0.040 25)",
+          "oklch(49% 0.050 25)",
+          "oklch(61% 0.050 25)",
+          "oklch(72% 0.040 25)",
+          "oklch(84% 0.030 25)",
+          "oklch(95% 0.021 25)"
+        ]
+      },
+      "stop": {
+        "role": "alert",
+        "displayName": "STOP Red",
+        "canonical": "#c8322b",
+        "tonalRamp": [
+          "oklch(15% 0.060 28)",
+          "oklch(26% 0.089 28)",
+          "oklch(38% 0.117 28)",
+          "oklch(49% 0.146 28)",
+          "oklch(61% 0.146 28)",
+          "oklch(72% 0.117 28)",
+          "oklch(84% 0.089 28)",
+          "oklch(95% 0.060 28)"
+        ]
+      },
+      "stop-hover": {
+        "role": "alert",
+        "displayName": "STOP Red (hover)",
+        "canonical": "#ad261f",
+        "tonalRamp": [
+          "oklch(15% 0.060 28)",
+          "oklch(26% 0.089 28)",
+          "oklch(38% 0.117 28)",
+          "oklch(49% 0.146 28)",
+          "oklch(61% 0.146 28)",
+          "oklch(72% 0.117 28)",
+          "oklch(84% 0.089 28)",
+          "oklch(95% 0.060 28)"
+        ]
+      },
+      "focus": {
+        "role": "secondary",
+        "displayName": "Focus Blue",
+        "canonical": "#1f5fae",
+        "tonalRamp": [
+          "oklch(15% 0.053 256)",
+          "oklch(26% 0.079 256)",
+          "oklch(38% 0.104 256)",
+          "oklch(49% 0.129 256)",
+          "oklch(61% 0.129 256)",
+          "oklch(72% 0.104 256)",
+          "oklch(84% 0.079 256)",
+          "oklch(95% 0.053 256)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Title",
+        "purpose": "Page headings, the sky greeting, the dose due now."
+      },
+      "lead": {
+        "displayName": "Lead",
+        "purpose": "Panel headings, due time, big button labels, ledes, and the one spoken instruction per dose step (at 400)."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Running text and controls; paragraphs cap at 68ch."
+      },
+      "small": {
+        "displayName": "Small",
+        "purpose": "Help, sub-lines, tags, arc time labels."
+      }
+    },
+    "iconSizes": [
+      {
+        "name": "icon",
+        "value": "1.3rem",
+        "purpose": "Icons in buttons, tabs, notices (Phosphor icon font)."
+      },
+      {
+        "name": "icon-lg",
+        "value": "1.7rem",
+        "purpose": "Status orbs and the simulated camera glyph."
+      }
+    ],
+    "rootSizes": [
+      {
+        "name": "display-default",
+        "value": "112.5%"
+      },
+      {
+        "name": "display-1",
+        "value": "125%"
+      },
+      {
+        "name": "display-2",
+        "value": "143.75%"
+      }
+    ],
+    "skyPhases": [
+      {
+        "name": "night",
+        "hours": "before 5 AM and from 9 PM"
+      },
+      {
+        "name": "dawn",
+        "hours": "5 AM to 9 AM"
+      },
+      {
+        "name": "day",
+        "hours": "9 AM to 5 PM"
+      },
+      {
+        "name": "dusk",
+        "hours": "5 PM to 9 PM"
+      }
+    ],
+    "arc": {
+      "from": "5 AM",
+      "to": "midnight",
+      "sunClearance": "3.9rem",
+      "narrowLabels": "only the dose at the sun keeps its time label under 760px"
+    },
+    "shadows": [
+      {
+        "name": "rest",
+        "value": "0 1px 2px rgba(22, 48, 79, .05), 0 10px 28px rgba(22, 48, 79, .07)",
+        "purpose": "Panels; selected segment or sub-tab."
+      },
+      {
+        "name": "lift",
+        "value": "0 2px 4px rgba(22, 48, 79, .06), 0 16px 36px rgba(22, 48, 79, .10)",
+        "purpose": "Due panel, dose-step panel, Display popover, toasts."
+      },
+      {
+        "name": "overlay",
+        "value": "0 4px 12px rgba(22, 48, 79, .10), 0 24px 60px rgba(22, 48, 79, .18)",
+        "purpose": "Ask assistant panel."
+      },
+      {
+        "name": "ring",
+        "value": "3px solid var(--sun-deep) at inset -6px",
+        "purpose": "The one act-now action per screen."
+      },
+      {
+        "name": "focus",
+        "value": "3px solid var(--focus), offset 3px",
+        "purpose": "Every focusable element."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(.16, 1, .3, 1)",
+        "purpose": "All state transitions."
+      },
+      {
+        "name": "sun-move",
+        "value": "left/top 1s ease",
+        "purpose": "Sun travelling along the arc."
+      },
+      {
+        "name": "breathe",
+        "value": "2.4s infinite",
+        "purpose": "Sun-coloured waiting indicator during checks."
+      },
+      {
+        "name": "toast-rise",
+        "value": ".25s",
+        "purpose": "Toast entry."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "durations to .01ms",
+        "purpose": "prefers-reduced-motion is respected."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "single-column",
+        "value": "1080px"
+      },
+      {
+        "name": "narrow",
+        "value": "760px"
+      }
+    ],
+    "highContrast": "Plain black on white, no sky; 2px black borders on panels, due panel, tabs, sky foot and non-quiet buttons; alert #a00000; no shadows; quiet actions underlined."
+  },
+  "components": [
+    {
+      "name": "Primary Button (big, ringed)",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one action of a screen, at the big size, carrying the sun-deep ring.",
+      "html": "<button class=\"ds-btn ds-btn-primary ds-btn-big ds-ringed\">Take my dose</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.55rem;min-height:48px;padding:.65rem 1.25rem;border-radius:var(--r-control,14px);border:2px solid var(--ink,#16304f);background:var(--cloud,#fcfdff);color:var(--ink,#16304f);font-family: var(--font); font-weight: 700;cursor:pointer;transition:background .18s cubic-bezier(.16,1,.3,1),transform .12s cubic-bezier(.16,1,.3,1)}.ds-btn:active{transform:translateY(1px)}.ds-btn:focus-visible{outline:3px solid var(--focus,#1f5fae);outline-offset:3px}.ds-btn-primary{background:var(--ink,#16304f);color:#fcfdff}.ds-btn-primary:hover{background:#0f2540}.ds-btn-big{min-height:60px;padding:.9rem 2rem;font-size:var(--fs-lead,1.3rem)}.ds-ringed{position:relative}.ds-ringed::after{content:\"\";position:absolute;inset:-6px;border-radius:inherit;border:3px solid var(--sun-deep,#e9a93a);pointer-events:none}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "Bordered ink action on cloud; also the form of an ordinary destructive action.",
+      "html": "<button class=\"ds-btn2\">I need this now</button>",
+      "css": ".ds-btn2{display:inline-flex;align-items:center;gap:.55rem;min-height:48px;padding:.65rem 1.25rem;border-radius:var(--r-control,14px);border:2px solid var(--ink,#16304f);background:var(--cloud,#fcfdff);color:var(--ink,#16304f);font-family: var(--font); font-weight: 700;cursor:pointer}.ds-btn2:hover{background:var(--cloud-2,#eef5fc)}.ds-btn2:active{transform:translateY(1px)}.ds-btn2:focus-visible{outline:3px solid var(--focus,#1f5fae);outline-offset:3px}"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "Side actions such as remind me later and read aloud.",
+      "html": "<button class=\"ds-btn-quiet\">Remind me in 5 min</button>",
+      "css": ".ds-btn-quiet{display:inline-flex;align-items:center;gap:.55rem;min-height:48px;padding:.65rem .8rem;border-radius:var(--r-control,14px);border:2px solid transparent;background:transparent;color:var(--ink-2,#33547a);font-family: var(--font); font-weight: 700;cursor:pointer}.ds-btn-quiet:hover{background:var(--cloud-2,#eef5fc);color:var(--ink,#16304f)}.ds-btn-quiet:focus-visible{outline:3px solid var(--focus,#1f5fae);outline-offset:3px}"
+    },
+    {
+      "name": "STOP",
+      "kind": "button",
+      "refersTo": "button-stop",
+      "description": "Always-visible red pill, isolated at the end of the top bar.",
+      "html": "<button class=\"ds-stop\">STOP</button>",
+      "css": ".ds-stop{display:inline-flex;align-items:center;gap:.5rem;min-height:52px;padding:.55rem 1.5rem;border:0;border-radius:999px;background:var(--stop,#c8322b);color:#fff;font-family: var(--font); font-weight: 700;letter-spacing:.06em;cursor:pointer}.ds-stop:hover{background:#ad261f}.ds-stop:active{transform:translateY(1px)}.ds-stop:focus-visible{outline:3px solid var(--focus,#1f5fae);outline-offset:3px}"
+    },
+    {
+      "name": "Sky Tabs",
+      "kind": "nav",
+      "refersTo": "tab",
+      "description": "Tabs on the sky band; the current tab is a cloud tile.",
+      "html": "<nav class=\"ds-sky\"><a class=\"ds-tab\" aria-current=\"page\" href=\"#\">Today</a><a class=\"ds-tab\" href=\"#\">Ask</a><a class=\"ds-tab\" href=\"#\">Setup</a></nav>",
+      "css": ".ds-sky{display:flex;gap:.25rem;padding:1rem;background:linear-gradient(180deg,#8ec2ee,#c9e3f8);border-radius:0 0 32px 32px}.ds-tab{display:inline-flex;align-items:center;min-height:48px;padding:.55rem 1.05rem;border-radius:14px;color:#16304f;font-family: var(--font); font-weight: 700;text-decoration:none}.ds-tab:hover{background:rgba(252,253,255,.4)}.ds-tab[aria-current=page]{background:rgba(252,253,255,.9)}.ds-tab:focus-visible{outline:3px solid #1f5fae;outline-offset:3px}"
+    },
+    {
+      "name": "Tag",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "Quiet pill tag.",
+      "html": "<span class=\"ds-tag\">As needed</span>",
+      "css": ".ds-tag{display:inline-flex;align-items:center;gap:.35rem;padding:.25rem .75rem;border-radius:999px;background:var(--cloud-2,#eef5fc);color:var(--ink-2,#33547a);font-family: var(--font); font-weight: 700;font-size:var(--fs-small,.875rem)}"
+    },
+    {
+      "name": "Due Panel",
+      "kind": "card",
+      "refersTo": "panel-due",
+      "description": "The dose due now: the one big thing on Today.",
+      "html": "<section class=\"ds-due\"><h2>Afternoon tablet</h2><p class=\"ds-when\"><span class=\"ds-sun\"></span>Due now, 3:25 PM</p></section>",
+      "css": ".ds-due{background:var(--cloud,#fcfdff);color:#16304f;border-radius:28px;padding:clamp(1.5rem,3vw,2.5rem);box-shadow:0 2px 4px rgba(22,48,79,.06),0 16px 36px rgba(22,48,79,.10);font-family:var(--font)}.ds-due h2{font-size:2.25rem;line-height:1.2;letter-spacing:-.02em;margin:0}.ds-when{display:flex;align-items:center;gap:.55rem;font-weight:700;color:#33547a;font-size:1.3rem;margin:.4rem 0 0}.ds-sun{width:1.1rem;height:1.1rem;border-radius:50%;background:radial-gradient(circle at 38% 34%,#fff1c9 0%,#ffd27a 48%,#e9a93a 100%)}"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "48px field with focus-blue border and halo.",
+      "html": "<label class=\"ds-field\">Medicine name<input placeholder=\"Headache relief\"></label>",
+      "css": ".ds-field{display:grid;gap:.4rem;font-weight:700;color:#16304f;font-family:var(--font)}.ds-field input{min-height:48px;padding:.55rem .85rem;border-radius:14px;border:2px solid var(--line-2,#b7cce3);background:var(--cloud,#fcfdff);font:inherit;font-weight:400}.ds-field input:focus{border-color:var(--focus,#1f5fae);outline:none;box-shadow:0 0 0 3px rgba(31,95,174,.25)}"
+    },
+    {
+      "name": "State Marks",
+      "kind": "custom",
+      "description": "Solid done, dashed waiting, struck skipped, alert missed; always beside words.",
+      "html": "<div class=\"ds-marks\"><span class=\"ds-mark done\"></span>Done <span class=\"ds-mark wait\"></span>Later <span class=\"ds-mark skip\"></span>Skipped <span class=\"ds-mark alert\"></span>Missed</div>",
+      "css": ".ds-marks{display:flex;align-items:center;gap:.5rem;color:#16304f;font-family:var(--font)}.ds-mark{width:.8rem;height:.8rem;border-radius:50%;border:2px solid #33547a}.ds-mark.done{background:#33547a}.ds-mark.wait{border-style:dashed}.ds-mark.skip{opacity:.55;background:linear-gradient(135deg,transparent 44%,#33547a 44% 56%,transparent 56%)}.ds-mark.alert{border-color:#b42318;background:#fdeceb}"
+    }
+  ],
+  "narrative": {
+    "northStar": "Morning Sky",
+    "overview": "The day is a sky. A gradient band across the top of every screen follows the real hour, the sun crosses a dashed arc from 5 AM to midnight, and each of today's doses sits on that arc at its own time. Everything below the sky is cloud-white panels on a pale sky ground, set in one navy ink. The world is calm, kind and plain: one obvious action per screen, large type, generous space, and nothing that needs decoding.\n\nState is never carried by colour alone. Every dose state has a form as well as words: a solid mark is done, a dashed mark is waiting, a ring means act now, a strike means skipped. The only warm colour is the sun, and it means \"now\". Red is kept back for the STOP button and for real alerts, so that when it appears it is believed.\n\nThe world replaces the retired pharmacy-label look (labels, stickers, identical white pill-app cards). It is rendered with soft neutral elevation, rounded cloud panels and a single typeface, Atkinson Hyperlegible Next, self-hosted.",
+    "keyCharacteristics": [
+      "A sky band keyed to the real hour (dawn, day, dusk, night) holds the top bar, the sun's arc and the greeting.",
+      "Cloud-white panels (24px corners; the due dose 28px) on a pale sky ground, with soft navy-tinted shadows.",
+      "One ink navy for type and primary actions; the warm sun only for \"now\"; red only for STOP and real alerts.",
+      "State in form plus words: solid done, dashed waiting, ringed act now, struck skipped.",
+      "One typeface on a four-step scale that grows with the user's Display text size.",
+      "A plain black-on-white high-contrast mode with no sky."
+    ],
+    "rules": [
+      {
+        "name": "The Sun Means Now Rule",
+        "body": "The warm sun palette appears only on the sun itself and on whatever is happening now. A thing that is not current never turns warm.",
+        "section": "colors"
+      },
+      {
+        "name": "The Red Is Believed Rule",
+        "body": "Red is STOP and real alerts, nothing else. A destructive but ordinary action (the danger button) is drawn in ink, not red; the build recoloured it for exactly this reason.",
+        "section": "colors"
+      },
+      {
+        "name": "The Pills Are Data Rule",
+        "body": "A medicine's colour swatch shows the real pill's colour from its label. It is data, not palette, and is exempt from the colour jobs above.",
+        "section": "colors"
+      },
+      {
+        "name": "The Four Steps Rule",
+        "body": "There are four type steps (small, body, lead, title), all in rem. The user's Display text size scales the root (112.5%, 125%, 143.75%), so every step and icon grows with it. Do not add steps or set type in px.",
+        "section": "typography"
+      },
+      {
+        "name": "The Soft Cloud Rule",
+        "body": "Elevation is soft and blurred, tinted with the ink navy. No hard offset shadows.",
+        "section": "elevation"
+      },
+      {
+        "name": "The One Ring Rule",
+        "body": "One ringed action per screen, and it is the primary action. If a screen has two ringed things, one of them is wrong.",
+        "section": "shapes"
+      }
+    ],
+    "dos": [
+      "**Do** key the sky band to the real hour through `html[data-sky]` (dawn, day, dusk, night) and keep type on the band in the sky ink pair.",
+      "**Do** give every state a form and words: solid done, dashed waiting, ringed act now, struck skipped, alert colour for missed or uncertain.",
+      "**Do** ring exactly one action per screen, the primary one.",
+      "**Do** keep the corner ladder: panels 24px (due panel 28px), insets 18px, controls 14px, chips and STOP full pill.",
+      "**Do** set all type in the four rem steps (small .875rem, body 1rem, lead 1.3rem, title 2.25rem) and icons at 1.3rem or 1.7rem, so the Display text sizes scale everything.",
+      "**Do** keep targets at 48px or more and STOP always visible and isolated.",
+      "**Do** let the sun stand for a dose due at the sun, and move any other dose clear of it along the arc rather than overlapping.",
+      "**Do** keep high contrast plain: black on white, no sky, 2px borders, underlined quiet actions."
+    ],
+    "donts": [
+      "**Don't** use red for anything but STOP and real alerts; draw ordinary destructive actions in ink.",
+      "**Don't** use the warm sun colours for anything that is not the sun or happening now.",
+      "**Don't** carry state by colour alone.",
+      "**Don't** add a second typeface, a fifth type step, or px font sizes.",
+      "**Don't** use hard offset shadows; elevation is soft and navy-tinted.",
+      "**Don't** return to label-and-sticker chrome or a list of identical white pill cards."
+    ]
+  }
+}

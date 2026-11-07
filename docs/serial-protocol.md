@@ -20,7 +20,7 @@ works as a reference implementation.
 | cmd | fields | meaning |
 |---|---|---|
 | `PING` | (no `id`) | Heartbeat, sent every 250 ms. Answer with `PONG`. |
-| `STATUS` | `id` | Answer with `STATUS`. |
+| `STATUS` | optional `id` | Answer with `STATUS`, which also carries `fw`. The app sends it on every new session in case `HELLO` was missed. |
 | `DISPENSE` | `id`, `t`, `c` (`"A"`/`"B"`), `n` (1..3) | Turn channel `c`'s rotor through `n` calibrated pocket cycles. |
 | `RELEASE` | `id`, `t`, `rev` | Unlock the shared tray latch (servo), only if every check below passes. |
 | `LOCK` | `id` | Command the latch locked. Door must be closed. |
@@ -48,20 +48,23 @@ Examples:
 | `PONG` | status fields (below) | Heartbeat reply. Doubles as live status. |
 | `STATUS` | status fields | Reply to `STATUS`. |
 | `ACK` | `id` | Command **accepted**. Not finished. |
-| `NACK` | `id`, `reason` | Rejected; nothing moved. Reasons: `BAD_VERSION`, `BAD_SESSION`, `MISSING_ID`, `ID_REUSED`, `UNKNOWN_CMD`, `UNKNOWN_CHANNEL`, `BAD_QUANTITY`, `FAULT`, `NOT_READY`, `MOTOR_BUSY`, `DOOR_OPEN`, `BAD_REV`, `ALREADY_RELEASED`. |
-| `CYCLE_DONE` | `id`, `t`, `c`, `rev` | The calibrated motion finished. This does **not** mean a token fell. |
+| `NACK` | `id`, `reason` | Rejected; nothing moved. Reasons: `BAD_VERSION`, `BAD_SESSION`, `MISSING_ID`, `ID_REUSED`, `UNKNOWN_CMD`, `UNKNOWN_CHANNEL`, `BAD_QUANTITY`, `FAULT`, `NOT_READY`, `MOTOR_BUSY`, `DOOR_OPEN`, `BAD_REV`, `ALREADY_RELEASED`, `HEARTBEAT_LOST`. |
+| `CYCLE_DONE` | `id`, `t`, `c`, `rev` + status fields | The calibrated motion finished. This does **not** mean a token fell. Carries the status fields so the host sees the motor idle at once (no wait for the next `PONG`). |
 | `RELEASED` | `id`, `t`, `rev`, `servo:"U"` | The latch was commanded open. |
 | `LOCKED` | `id`, `servo:"L"` | The latch was commanded locked. |
-| `STOPPED` | `id` (may be null) | STOP was handled. |
-| `FAULT` | `reason`, optional `c`, `id` | For example `MOTOR_STALL`, `HOMING_TIMEOUT`, `HEARTBEAT_LOST`. |
+| `STOPPED` | `id` (may be null) + status fields | STOP was handled. |
+| `FAULT` | `reason`, optional `c`, `id` | For example `MOTOR_STALL`, `MOTION_TIMEOUT`, `HOMING_TIMEOUT`, `HOME_MISMATCH`, `HEARTBEAT_LOST`. |
 | `SWITCH` | `door`, `hA`, `hB`, `rev` | A debounced switch edge. |
 
-Status fields (compact, so the line stays under 256 bytes):
+Status fields (`PONG`, `STATUS`, `CYCLE_DONE`, `STOPPED`; compact, so the line stays under 256 bytes):
 ```
 {"v":3,"s":"a73f","event":"PONG","mA":"idle","mB":"idle","hA":1,"hB":1,"door":1,"servo":"L","rev":4,"txn":null,"fault":null}
 ```
 - `mA`/`mB`: `idle`, `moving`, `homing` or `fault`.
-- `hA`/`hB`: home switch for each rotor (1 = at home).
+- `hA`/`hB`: rotor **position known** (1 = homed since boot or `RESET`, and no motion was interrupted since).
+  This is not the raw switch: after one pocket the rotor rests off its home switch. `DISPENSE` needs it
+  (`NOT_READY` otherwise). A STOP, fault or timeout during motion clears it until `RESET` rehomes. Once per
+  full revolution the switch must be pressed again, otherwise `FAULT HOME_MISMATCH`.
 - `door`: access door switch (1 = closed).
 - `servo`: **commanded** latch state, `L` or `U`. No feedback switch is fitted, so this is not a measurement.
 - `rev`: tray revision. Add 1 on **every** door edge (open or close) and every rotor motion step that could move a token.
@@ -101,6 +104,24 @@ UART0 stays reserved for USB. 3.3 V logic only. Motors and servo run from their 
 - `X-Capture-Age-Ms`: milliseconds between capture and response
 
 Capture on request (discard any buffered frame first). The app rejects repeated sequence numbers and frames older than 500 ms.
+
+Reference firmware: `firmware/doseguard_tray_cam/` (AI Thinker ESP32-CAM, `GET /snapshot`, plus `GET /status`).
+Check a camera board with `scripts/tray_cam_check.py --url <TRAY_CAMERA_URL> --tray` before using it in the app.
+
+## Bench check (before connecting the app)
+
+`scripts/bench_check.py` runs the rules above against the board and prints PASS/FAIL per check:
+framing, every NACK reason it can provoke safely, A and B cycles, duplicate IDs, release once,
+STOP mid-motion, watchdog and RESET. It moves both rotors and the latch, so assemble the enclosure,
+close the door and keep hands clear. Close the app first (one owner per port).
+
+```bash
+.venv/bin/python scripts/bench_check.py --port /dev/cu.usbserial-XXXX          # conformance
+.venv/bin/python scripts/bench_check.py --port ... --trials 20 --channel A --ask   # feed trials -> CSV
+```
+
+`--ask` asks how many tokens fell after each cycle, since `CYCLE_DONE` only proves the motion finished.
+Report A and B separately. Without hardware, `scripts/virtual_controller.py` gives a simulated port to try it on.
 
 ## Testing the firmware against the app
 

@@ -13,7 +13,7 @@ from zoneinfo import ZoneInfo
 
 from .config import Settings
 from .errors import WorkflowError
-from .plans import slot_id
+from .plans import is_as_needed, slot_id
 from .store import Store
 from .timeutil import iso, local_date, parse, parse_hhmm, resolve_local
 
@@ -88,6 +88,8 @@ class ReminderService:
             with self.store.tx() as conn:
                 for day in (today, today + timedelta(days=1)):
                     for e in plan["entries"]:
+                        if is_as_needed(e):
+                            continue  # taken on request only: no occurrences, no reminders
                         for hhmm in e["times"]:
                             sid = slot_id(e["entry_key"], hhmm)
                             occ = f"{sid}|{day.isoformat()}"
@@ -267,20 +269,28 @@ class ReminderService:
                 raise WorkflowError(409, "INVALID_TRANSITION", "Device doses are confirmed through verification.")
             if d["demo"] != self.store.demo_flag(conn):
                 raise WorkflowError(409, "DEMO_MISMATCH")
-            r = conn.execute("SELECT * FROM reminders WHERE dose_id=?", (dose_id,)).fetchone()
-            if r["state"] == "SCHEDULED":
-                raise WorkflowError(409, "NOT_DUE")
             if d["self_report"]:
                 raise WorkflowError(409, "INVALID_TRANSITION", "Already reported.")
-            now = self.store.now()
-            conn.execute("UPDATE doses SET self_report='TAKEN_UNVERIFIED', self_report_at=?, outcome='USER_REPORTED_TAKEN', updated_at=?"
-                         " WHERE dose_id=?", (now, now, dose_id))
-            conn.execute("UPDATE reminders SET state='CLOSED', closed_at=?, close_reason='USER_REPORTED_TAKEN', next_alert_at=NULL,"
-                         " updated_at=? WHERE dose_id=?", (now, now, dose_id))
-            self.store.event(conn, "SELF_REPORT", dose_id=dose_id, reminder_id=r["reminder_id"],
-                             details={"report": "TAKEN_UNVERIFIED", "verified": False})
+            r = conn.execute("SELECT * FROM reminders WHERE dose_id=?", (dose_id,)).fetchone()
+            if r is None:  # as-needed doses are reported when requested, never later
+                raise WorkflowError(409, "INVALID_TRANSITION")
+            if r["state"] == "SCHEDULED":
+                raise WorkflowError(409, "NOT_DUE")
+            self.record_self_report(conn, dose_id, r["reminder_id"])
             return {"dose_id": dose_id, "self_report": "TAKEN_UNVERIFIED"}
         return self._idempotent(request_id, "doses/self-report", run)
+
+    def record_self_report(self, conn, dose_id: str, reminder_id: str | None, **details) -> str:
+        """The one write for an unverified "I took it" report. Never touches camera checks or hardware."""
+        now = self.store.now()
+        conn.execute("UPDATE doses SET self_report='TAKEN_UNVERIFIED', self_report_at=?, outcome='USER_REPORTED_TAKEN', updated_at=?"
+                     " WHERE dose_id=?", (now, now, dose_id))
+        if reminder_id:
+            conn.execute("UPDATE reminders SET state='CLOSED', closed_at=?, close_reason='USER_REPORTED_TAKEN', next_alert_at=NULL,"
+                         " updated_at=? WHERE dose_id=?", (now, now, dose_id))
+        self.store.event(conn, "SELF_REPORT", dose_id=dose_id, reminder_id=reminder_id,
+                         details={"report": "TAKEN_UNVERIFIED", "verified": False, **details})
+        return now
 
     def close_for_dose(self, conn, dose_id: str, reason: str) -> None:
         """Called by the workflow engine inside its transaction (for example after release)."""
@@ -299,7 +309,7 @@ class ReminderService:
             plan = self.store.active_plan(1)
             if not plan:
                 raise WorkflowError(409, "INVALID_TRANSITION", "Confirm a demo plan first.")
-            entries = [e for e in plan["entries"] if not entry_keys or e["entry_key"] in entry_keys]
+            entries = [e for e in plan["entries"] if (not entry_keys or e["entry_key"] in entry_keys) and not is_as_needed(e)]
             if not entries:
                 raise WorkflowError(422, "VALIDATION", "No matching demo entries.")
             tz = ZoneInfo(plan["timezone"])

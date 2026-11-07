@@ -1,0 +1,119 @@
+{
+  "title": "Choose the visual world for DoseGuard",
+  "question": "The roll assigned the Calendar Blister Pack. Keep it, take an alternate, or re-roll.",
+  "options": [
+    {
+      "id": "assigned",
+      "kind": "assigned",
+      "label": "Calendar Blister Pack",
+      "kicker": "THE ROLL",
+      "lineage": "pharmacy calendar blister packs: clear domes over printed foil",
+      "thesis": "Today's medicine is a strip of blister pockets you can read at a glance: sealed, due, or popped.",
+      "palette": ["#f6f9fc", "#cfe6f7", "#8ec5ea", "#10324f", "#c8302c"],
+      "materials": ["clear light-blue PVC domes", "white printed foil", "pharmacy-red day labels"],
+      "viewport": "White app shell with a light-blue top bar; Today leads with a large blister strip of the day's doses, the due pocket ringed, one big Get my dose button beneath it.",
+      "risk": "Reads as decoration if the pockets stop carrying real dose state.",
+      "raised": [
+        {"from": "challenger-doujin", "raise": "The due dose gets one unmistakable ring, and finished doses stay visible as popped pockets, never hidden."},
+        {"from": "challenger-timetable", "raise": "Each dose keeps a fixed cell in the strip; state changes fill or empty it without reflowing anything."},
+        {"from": "challenger-zoo", "raise": "One element dominates each screen: the strip on Today, the single instruction on each dose step."},
+        {"from": "challenger-emigre", "raise": "Type runs on three strict size steps of one face, so hierarchy never relies on decoration."},
+        {"from": "challenger-variable", "raise": "The text-size control remaps the whole page live, with no component overriding it."}
+      ],
+      "html": ".impeccable/mocks/decision/assigned.html"
+    },
+    {
+      "id": "model-pick",
+      "kind": "pick",
+      "label": "Weekly Pill Organizer",
+      "kicker": "IMPECCABLE’S PICK",
+      "lineage": "seven-day AM/PM plastic pill organizers",
+      "thesis": "The day is a row of lidded compartments, morning to night; a lid opens when its dose is due.",
+      "palette": ["#ffffff", "#bfe0f5", "#2b3a4a", "#c8102e"],
+      "materials": ["translucent blue lids", "embossed day letters", "red AM/PM tabs"],
+      "viewport": "Light-blue shell; Today shows morning, noon, evening and night compartments side by side, the due one open with its pill and a big button.",
+      "risk": "The pill organizer is the first thing most medication apps reach for.",
+      "html": ".impeccable/mocks/decision/model-pick.html"
+    },
+    {
+      "id": "challenger-boarding",
+      "kind": "challenger",
+      "catalogId": "vernacular-ephemera-boarding-pass-and-gate-board",
+      "label": "Boarding Pass and Gate Board",
+      "verdict": "competitive",
+      "lineage": "airline boarding passes and departure boards",
+      "thesis": "Doses ranked by time like departures; a due dose lights up and holds until you act.",
+      "palette": ["#ffffff", "#dcebf7", "#0b2545", "#d7263d"],
+      "materials": ["segmented pass", "tabular figures", "held alert row"],
+      "viewport": "Light shell; Today is a departure-style board of dose rows, the due row lit, with a pass-style card for the current dose.",
+      "case": "Fuses cleanly: time-ordered doses and held alerts suit reminders; loses on identification, since patients know pill packs better than gate boards.",
+      "risk": "Can feel like travel, not care, if the board metaphor leads.",
+      "html": ".impeccable/mocks/decision/challenger-boarding.html",
+      "hero": "https://impeccable.style/worlds/cards/vernacular-ephemera-boarding-pass-and-gate-board-hero.webp"
+    },
+    {
+      "id": "challenger-doujin", "kind": "challenger", "catalogId": "pop-culture-shelf-doujin-event-catalog",
+      "label": "Convention Circle Catalog", "verdict": "declined",
+      "lineage": "doujin event catalogs on newsprint",
+      "thesis": "Every dose a stamp-sized cell in a dense numbered grid.",
+      "palette": ["#efeee9", "#1c1c1c", "#2f6fd6"], "materials": ["newsprint", "biro circles"],
+      "viewport": "A packed grid of tiny dose cells.", "risk": "Far too dense for older or low-vision patients.",
+      "case": "Loses both axes: patients do not know this world and density fights clarity.",
+      "kept": "One pen-ring marks the active item; finished items stay visible, struck through."
+    },
+    {
+      "id": "challenger-timetable", "kind": "challenger", "catalogId": "rw-timetable-slide-rack",
+      "label": "Timetable Slide Rack", "verdict": "declined",
+      "lineage": "1970s pocket airline timetables",
+      "thesis": "One type size, raked glass slides on a lit goldenrod bed.",
+      "palette": ["#d9a520", "#1d2b33", "#f4efe1", "#d23c1e"], "materials": ["tinted glass", "acetate"],
+      "viewport": "A sheared rack of slides.", "risk": "Raked shapes and one type size hurt low-vision reading.",
+      "case": "Loses both axes: unfamiliar and hard to read for this audience.",
+      "kept": "State lives in a fixed cell: filled holds, empty is done."
+    },
+    {
+      "id": "challenger-zoo", "kind": "challenger", "catalogId": "aww2-zoo-gardens-guide-map",
+      "label": "Zoo and Gardens Guide Map", "verdict": "declined",
+      "lineage": "illustrated park guide maps",
+      "thesis": "Swelling lobes of flat colour, one dominating each screen.",
+      "palette": ["#8ed462", "#f5f1e4", "#2c2e2a", "#ff705d"], "materials": ["flat colour lobes", "capsule labels"],
+      "viewport": "A green lobe filling the screen.", "risk": "Playful overshoot motion unsettles anxious patients.",
+      "case": "Loses both axes: leisure-park tone undercuts medical trust.",
+      "kept": "One element dominates each screen."
+    },
+    {
+      "id": "challenger-emigre", "kind": "challenger", "catalogId": "emigre-bitmap-specimen",
+      "label": "Bitmap Type Specimen", "verdict": "declined",
+      "lineage": "Emigre bitmap specimens",
+      "thesis": "Coarse pixel display type at poster scale.",
+      "palette": ["#f7f7f2", "#111111", "#ff3b1f"], "materials": ["pixel type", "halftone"],
+      "viewport": "A pixel headline over dense columns.", "risk": "Pixel type is hard to read for low vision.",
+      "case": "Loses both axes: novelty type defeats legibility.",
+      "kept": "Strict size steps of one face carry the hierarchy."
+    },
+    {
+      "id": "challenger-variable", "kind": "challenger", "catalogId": "variable-font-specimen",
+      "label": "Variable Font Specimen", "verdict": "declined",
+      "lineage": "interactive variable-font specimens",
+      "thesis": "One slider morphs every glyph on the page.",
+      "palette": ["#fafafa", "#111111", "#4b5bff"], "materials": ["flat paper", "monospace readouts"],
+      "viewport": "A giant glyph with axis sliders.", "risk": "A type specimen says nothing about medicine.",
+      "case": "Loses both axes: no link to patients or doses.",
+      "kept": "One control remaps the whole page live (the text-size setting)."
+    }
+  ],
+  "reroll": {"registers": ["safer", "bolder"]},
+  "buildPath": {"value": "code"},
+  "canon": true,
+  "canonCard": {
+    "kind": "canon",
+    "label": "The category standard",
+    "thesis": "A clean medication app like Apple Health: white rows, blue accent, red for alerts.",
+    "palette": ["#ffffff", "#f2f4f7", "#0a6cd6", "#e5372e"],
+    "materials": ["white list rows", "system type"],
+    "viewport": "A list of today's medicines with times and a Take button on the due one.",
+    "risk": "Indistinguishable from every medication app by design.",
+    "html": ".impeccable/mocks/decision/canon.html"
+  },
+  "steer": true
+}

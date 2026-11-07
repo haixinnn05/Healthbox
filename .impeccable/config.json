@@ -1,0 +1,44 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "dark-glow",
+        "value": "*",
+        "files": [
+          "static/index.html"
+        ],
+        "createdAt": "2026-11-07T20:16:44.381Z",
+        "reason": "Claude triage: only ink-tinted --shadow elevation tokens remain (offset, blurred, 5-10% alpha) on a light page; ring states were converted to outlines"
+      },
+      {
+        "rule": "dark-glow",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/r3-sky.html"
+        ],
+        "createdAt": "2026-11-07T20:19:34.514Z",
+        "reason": "Claude triage: decision-round HTML sketch, a spent throwaway mock that never ships; the built UI is static/"
+      },
+      {
+        "rule": "border-accent-on-rounded",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/r3-ticket.html"
+        ],
+        "createdAt": "2026-11-07T20:19:34.531Z",
+        "reason": "Claude triage: decision-round HTML sketch, a spent throwaway mock that never ships; the built UI is static/"
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          ".impeccable/mocks/decision/r3-ticket.html"
+        ],
+        "createdAt": "2026-11-07T20:19:34.546Z",
+        "reason": "Claude triage: decision-round HTML sketch, a spent throwaway mock that never ships; the built UI is static/"
+      }
+    ]
+  }
+}

@@ -6,3 +6,8 @@ data/
 models/*.onnx
 .pytest_cache/
 .DS_Store
+firmware/doseguard_tray_cam/wifi_secrets.h
+.impeccable/hook.cache.json
+.impeccable/questions/
+.impeccable/config.local.json
+output/

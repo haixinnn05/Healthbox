@@ -35,7 +35,7 @@ MESSAGES: dict[str, str] = {
     "DEVICE_FAULT": "The device reports a fault. Use Device controls for supervised recovery.",
     "DEVICE_RESTARTED": "The controller restarted. The session is new and unarmed.",
     "NOT_ARMED": "The device is not armed. Inspect the enclosure and arm it in Device controls.",
-    "NOT_HOMED": "A rotor is not at home. Use supervised recovery to rehome.",
+    "NOT_HOMED": "A rotor's position is not known (it was stopped or faulted mid-motion). Use supervised recovery to rehome.",
     "MOTOR_BUSY": "A motor is still moving.",
     "STOPPED": "STOP was pressed. Inspect the device, then use supervised recovery.",
     "OUTCOME_UNCERTAIN": "Outcome uncertain. Nothing will be repeated automatically. Inspect the device.",
@@ -54,13 +54,28 @@ MESSAGES: dict[str, str] = {
     "DEMO_MISMATCH": "This record belongs to the other mode (demo or ordinary).",
     "HARDWARE_BUSY": "Hardware must be idle for this change.",
     "REQUEST_ID_REUSED": "This request ID was already used for a different action.",
+    # As needed
+    "TOO_SOON": "It is too soon since the last dose of this medicine.",
+    "DAILY_LIMIT": "The most doses allowed in 24 hours have already been taken.",
+    "AS_NEEDED_IN_PROGRESS": "A dose of this medicine is already being prepared. Finish or cancel it first.",
+    "UNKNOWN_ENTRY": "This medicine is not in the confirmed plan. Refresh and try again.",
+    "NOT_AS_NEEDED": "This medicine follows a schedule. Take it when its reminder is due.",
 }
+
+AS_NEEDED_WAIT = ("TOO_SOON", "DAILY_LIMIT")
 
 
 def message(code: str, **details) -> str:
     if code == "COUNT_MISMATCH" and details.get("expected") is not None:
         return count_mismatch_sentence(details["expected"], details.get("observed") or {}, details.get("labels") or {})
+    if code in AS_NEEDED_WAIT and details.get("when"):
+        return f"{MESSAGES[code]} The next dose can be taken {_at(details['when'])}."
     return MESSAGES.get(code, code.replace("_", " ").capitalize() + ".")
+
+
+def _at(when: str) -> str:
+    """'6:15 PM' -> 'at 6:15 PM'; 'tomorrow at 6:15 PM' stays as it is."""
+    return when if " at " in when else f"at {when}"
 
 
 def _plural(n: int, word: str) -> str:

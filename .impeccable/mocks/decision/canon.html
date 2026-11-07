@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>DoseGuard: Category standard</title>
+<style>
+  *{box-sizing:border-box;margin:0}
+  html,body{width:1440px;height:900px;overflow:hidden}
+  body{font-family:system-ui,-apple-system,sans-serif;background:#f2f4f7;color:#1c1c1e}
+  .side{position:fixed;left:0;top:0;bottom:0;width:250px;background:#fff;padding:28px 18px;border-right:1px solid #e3e6ea}
+  .side b{font-size:21px;display:block;margin-bottom:26px}
+  .side a{display:block;padding:12px 14px;border-radius:10px;font-size:17px;font-weight:600;margin-bottom:4px}
+  .side a.on{background:#e8f1fc;color:#0a6cd6}
+  main{margin-left:250px;padding:48px 64px}
+  h1{font-size:36px}
+  .list{margin-top:28px;background:#fff;border-radius:14px;overflow:hidden}
+  .it{display:flex;align-items:center;gap:18px;padding:22px 26px;font-size:19px}
+  .it+.it{border-top:1px solid #eceef1}
+  .dot{width:16px;height:16px;border-radius:50%}
+  .grow{flex:1}
+  .tm{color:#6b6f76}
+  .take{background:#0a6cd6;color:#fff;font-weight:700;padding:12px 22px;border-radius:999px}
+  .due{color:#e5372e;font-weight:700}
+</style></head>
+<body>
+  <nav class="side"><b>DoseGuard</b><a class="on">Today</a><a>Dose steps</a><a>Medicines</a><a>History</a><a>Device</a></nav>
+  <main><h1>Today</h1>
+    <div class="list">
+      <div class="it"><span class="dot" style="background:#2f6fd6"></span><span class="grow">Blue token, 1</span><span class="tm">8:00 AM</span><span>Taken</span></div>
+      <div class="it"><span class="dot" style="background:#2f6fd6"></span><span class="grow">Blue token, 1 <span class="due">Due now</span></span><span class="tm">1:20 PM</span><span class="take">Take</span></div>
+      <div class="it"><span class="dot" style="background:#e8822a"></span><span class="grow">Orange token, 1</span><span class="tm">6:00 PM</span><span>Later</span></div>
+      <div class="it"><span class="dot" style="background:#2f6fd6"></span><span class="grow">Blue token, 1</span><span class="tm">10:00 PM</span><span>Later</span></div>
+    </div>
+  </main>
+</body></html>

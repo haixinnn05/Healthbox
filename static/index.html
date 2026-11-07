@@ -4,56 +4,80 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="dg-token" content="__DOSEGUARD_TOKEN__">
-  <meta name="color-scheme" content="light dark">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#9ccbf0">
   <title>DoseGuard</title>
+  <link rel="preload" href="/static/vendor/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="preload" href="/static/vendor/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="/static/vendor/phosphor/style.css">
   <link rel="stylesheet" href="/static/styles.css">
+  <script>
+    // Apply saved display settings and the sky's time of day before first paint.
+    try {
+      const p = JSON.parse(localStorage.getItem("dg-prefs") || "{}");
+      const r = document.documentElement;
+      if (p.size) r.dataset.size = p.size;
+      if (p.contrast) r.dataset.contrast = "high";
+      if (p.lang) r.lang = p.lang === "zh" ? "zh-CN" : p.lang;
+      const hr = new Date().getHours();
+      r.dataset.sky = hr < 5 || hr >= 21 ? "night" : hr < 9 ? "dawn" : hr < 17 ? "day" : "dusk";
+    } catch (e) {}
+  </script>
 </head>
 <body>
-  <header class="topbar" role="banner">
-    <div class="brand">
-      <span class="brand-mark" aria-hidden="true"></span>
-      <span class="brand-name">DoseGuard</span>
-      <span id="demo-badge" class="badge badge-demo" hidden>DEMO MODE</span>
-    </div>
-    <div class="chips" id="chips" aria-live="polite"></div>
-    <div class="topbar-actions">
-      <button class="btn btn-quiet" id="assistant-toggle" aria-expanded="false" aria-controls="assistant">Ask DoseGuard</button>
-      <button class="btn btn-stop" id="stop-btn" aria-label="Stop the device now">STOP</button>
-    </div>
-  </header>
+  <a class="skip-link" href="#main" data-i18n="app.skip">Skip to main content</a>
 
-  <div class="layout">
-    <nav class="sidebar" aria-label="Main">
-      <a href="#today" data-view="today">Today <span class="nav-count" id="nav-due" hidden></span></a>
-      <a href="#schedules" data-view="schedules">Schedules</a>
-      <a href="#setup" data-view="setup">Setup</a>
-      <a href="#verify" data-view="verify">Verification <span class="nav-dot" id="nav-verify" hidden></span></a>
-      <a href="#history" data-view="history">History</a>
-      <a href="#device" data-view="device">Device</a>
-      <div class="sidebar-foot" id="sidebar-foot"></div>
-    </nav>
-
-    <main id="main" class="main" tabindex="-1"></main>
-
-    <aside id="assistant" class="assistant" aria-label="DoseGuard assistant" hidden>
-      <div class="assistant-head">
-        <div>
-          <h2>Ask DoseGuard</h2>
-          <p class="muted small">Explains what the app knows. It can't take any action.</p>
-        </div>
-        <button class="btn btn-quiet btn-icon" id="assistant-close" aria-label="Close assistant">✕</button>
+  <div class="sky" id="sky">
+    <header class="topbar">
+      <a class="brand" href="#today" aria-label="DoseGuard, Today">
+        <span class="brand-mark" aria-hidden="true"></span>
+        <span class="brand-name">DoseGuard</span>
+      </a>
+      <nav class="tabs" aria-label="Main">
+        <a class="tab" href="#today" data-view="today"><span data-i18n="nav.today">Today</span><span class="count" id="nav-due" hidden></span></a>
+        <a class="tab" href="#verify" data-view="verify" id="tab-verify"><span data-i18n="nav.verify">Dose steps</span><span class="live" id="nav-verify" hidden aria-hidden="true"></span></a>
+        <button class="tab" type="button" id="assistant-toggle" aria-expanded="false" aria-controls="assistant"><span data-i18n="top.ask">Ask</span></button>
+        <a class="tab setup-door" id="care-link" href="#schedules"><span data-i18n="top.caregiver">Setup</span></a>
+      </nav>
+      <span class="spacer"></span>
+      <div class="topbar-actions">
+        <button class="top-btn" id="prefs-toggle" aria-expanded="false" aria-controls="prefs" data-i18n-aria="top.display" aria-label="Display">
+          <i class="ph ph-text-aa" aria-hidden="true"></i><span class="btn-text" data-i18n="top.display">Display</span>
+        </button>
+        <section id="prefs" class="prefs-panel" hidden aria-labelledby="prefs-title"></section>
       </div>
-      <div class="assistant-prompts" id="assistant-prompts"></div>
-      <div class="assistant-log" id="assistant-log" aria-live="polite"></div>
-      <form class="assistant-form" id="assistant-form">
-        <label for="assistant-input" class="sr-only">Question</label>
-        <input id="assistant-input" maxlength="500" autocomplete="off" placeholder="Ask about reminders, blocks or setup">
-        <button class="btn btn-primary" type="submit">Ask</button>
-      </form>
-    </aside>
+      <button class="btn-stop" id="stop-btn" data-i18n-aria="top.stop_aria" aria-label="Stop the dispenser now">
+        <i class="ph ph-hand-palm" aria-hidden="true"></i><span data-i18n="top.stop">STOP</span>
+      </button>
+    </header>
+    <div class="sky-notices">
+      <span id="demo-badge" class="demo-tag" hidden data-i18n="demo.badge">Demo mode</span>
+      <div class="status-line" id="chips" role="status" aria-live="polite"></div>
+    </div>
+    <div class="sky-scene" id="sky-scene"></div>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <main id="main" class="main" tabindex="-1"></main>
+
+  <aside id="assistant" class="assistant" aria-labelledby="assistant-title" hidden>
+    <div class="assistant-head">
+      <div>
+        <h2 id="assistant-title" data-i18n="ask.title">Ask DoseGuard</h2>
+        <p class="assistant-sub" data-i18n="ask.sub">It explains what the app knows. It can't take any action.</p>
+      </div>
+      <button class="icon-btn" id="assistant-close" data-i18n-aria="prefs.close" aria-label="Close"><i class="ph ph-x" aria-hidden="true"></i></button>
+    </div>
+    <div class="assistant-prompts" id="assistant-prompts"></div>
+    <div class="assistant-log" id="assistant-log" aria-live="polite"></div>
+    <form class="assistant-form" id="assistant-form">
+      <label for="assistant-input" class="sr-only" data-i18n="ask.placeholder">Type a question</label>
+      <input id="assistant-input" maxlength="500" autocomplete="off" data-i18n-placeholder="ask.placeholder" placeholder="Type a question">
+      <button class="btn btn-primary" type="submit" data-i18n="ask.send">Ask</button>
+    </form>
+  </aside>
+
+  <div id="toast" class="toast" role="status" aria-live="assertive" hidden></div>
+  <script src="/static/i18n.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

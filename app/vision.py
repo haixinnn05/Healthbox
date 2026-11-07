@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -50,6 +51,7 @@ class FaceEngine:
         self.models_dir = models_dir
         self._det = None
         self._rec = None
+        self._lock = threading.Lock()
         self.error: str | None = None
 
     def available(self) -> bool:
@@ -65,9 +67,8 @@ class FaceEngine:
 
     DETECT_WIDTH = 640  # YuNet is far more confident (0.92 vs 0.70) and faster on small inputs
 
-    def analyze(self, img) -> dict:
+    def _detect(self, img):
         import cv2
-        import numpy as np
         self._load()
         h, w = img.shape[:2]
         if w > self.DETECT_WIDTH:
@@ -75,13 +76,27 @@ class FaceEngine:
             h, w = img.shape[:2]
         self._det.setInputSize((w, h))
         _, faces = self._det.detect(img)
-        n = 0 if faces is None else len(faces)
-        if n != 1:
-            return {"faces": n}
-        aligned = self._rec.alignCrop(img, faces[0])
-        feat = self._rec.feature(aligned).flatten().astype("float32")
-        feat /= (np.linalg.norm(feat) + 1e-9)
-        return {"faces": 1, "feature": feat, "score": float(faces[0][-1])}
+        return img, faces
+
+    def detect(self, img) -> dict:
+        """Positioning hints need detection, not an identity embedding."""
+        with self._lock:
+            _, faces = self._detect(img)
+            n = 0 if faces is None else len(faces)
+            return {"faces": n, "score": float(faces[0][-1]) if n == 1 else 0.0}
+
+    def analyze(self, img) -> dict:
+        import numpy as np
+        # YuNet input size and SFace buffers are mutable; do not run them concurrently.
+        with self._lock:
+            img, faces = self._detect(img)
+            n = 0 if faces is None else len(faces)
+            if n != 1:
+                return {"faces": n}
+            aligned = self._rec.alignCrop(img, faces[0])
+            feat = self._rec.feature(aligned).flatten().astype("float32")
+            feat /= (np.linalg.norm(feat) + 1e-9)
+            return {"faces": 1, "feature": feat, "score": float(faces[0][-1])}
 
     @staticmethod
     def best_similarity(feat, refs) -> float:
@@ -259,6 +274,9 @@ class VisionService:
         self.face = FaceEngine(settings.models_dir)
         self.tray = TrayInspector(settings)
         self.sim = {"face": "recipient", "tray": "auto"}
+        self._face_operation = asyncio.Lock()
+        self._hint_lock = asyncio.Lock()
+        self._hint: tuple[str, float, dict] | None = None
 
     @property
     def simulated(self) -> bool:
@@ -273,15 +291,36 @@ class VisionService:
         if tray in SIM_TRAY:
             self.sim["tray"] = tray
 
+    async def face_preview(self) -> dict:
+        if self.simulated or not self.face.available():
+            return {"available": False}
+        # Let enrollment and guarded identity checks own inference while active.
+        if self._face_operation.locked():
+            return {"available": True, "faces": None, "busy": True}
+        async with self._hint_lock:
+            f = await self.camera.frame("face")
+            now = self.clock.monotonic()
+            if f is None or now - f.capture_mono > 0.5:
+                return {"available": True, "faces": None}
+            if self._hint and (self._hint[0] == f.frame_id or now - self._hint[1] < 0.15):
+                return self._hint[2]
+            if self._face_operation.locked():
+                return {"available": True, "faces": None, "busy": True}
+            r = await asyncio.to_thread(self.face.detect, f.image)
+            result = {"available": True, "faces": r["faces"], "score": round(r.get("score", 0.0), 2)}
+            self._hint = (f.frame_id, now, result)
+            return result
+
     # -- frame collection --------------------------------------------------------
     async def _collect(self, role: str, analyze) -> tuple[list[tuple[Frame, dict]], str | None]:
         s = self.settings
         start = self.clock.monotonic()
         out: list[tuple[Frame, dict]] = []
         last_key = None
+        interval = s.check_min_span_s / max(1, s.check_frames - 1)
         while True:
             if self.clock.monotonic() - start > s.check_timeout_s:
-                return out, ("CAMERA_STALE" if not out else None)
+                return out, "CAMERA_STALE"
             f = await self.camera.frame(role)
             if f is None:
                 await asyncio.sleep(0.05)
@@ -289,6 +328,11 @@ class VisionService:
             key = (f.source_id, f.camera_session, f.seq)
             if key == last_key or self.clock.monotonic() - f.capture_mono > 0.5:
                 await asyncio.sleep(0.03)
+                continue
+            if out and (f.source_id, f.camera_session) != (out[0][0].source_id, out[0][0].camera_session):
+                return out, "CAMERA_STALE"
+            if out and f.capture_mono - out[-1][0].capture_mono < interval:
+                await asyncio.sleep(0.01)
                 continue
             last_key = key
             res = await asyncio.to_thread(analyze, f.image)
@@ -314,6 +358,10 @@ class VisionService:
 
     # -- face -------------------------------------------------------------------------
     async def check_face(self, person: dict | None) -> Observation:
+        async with self._face_operation:
+            return await self._check_face(person)
+
+    async def _check_face(self, person: dict | None) -> Observation:
         if not person:
             return Observation("FACE_MATCH", "NOT_OBSERVED", "none", "NOT_ENROLLED", message("NOT_ENROLLED"))
         if self.simulated:
@@ -378,6 +426,10 @@ class VisionService:
 
     async def enroll(self, person_id: str, samples: int = 5) -> tuple[str | None, str | None]:
         """Capture reference embeddings from several poses. Returns (relative path, error)."""
+        async with self._face_operation:
+            return await self._enroll(person_id, samples)
+
+    async def _enroll(self, person_id: str, samples: int) -> tuple[str | None, str | None]:
         import numpy as np
         if self.simulated:
             return None, None
@@ -386,13 +438,17 @@ class VisionService:
         feats = []
         seen = {"no_face": 0, "multiple": 0}
         start = self.clock.monotonic()
-        last_seq = None
+        last_key = None
         while len(feats) < samples and self.clock.monotonic() - start < 15:
             f = await self.camera.frame("face")
-            if f is None or f.seq == last_seq:
+            if f is None or self.clock.monotonic() - f.capture_mono > 0.5:
                 await asyncio.sleep(0.05)
                 continue
-            last_seq = f.seq
+            key = (f.source_id, f.camera_session, f.seq)
+            if key == last_key:
+                await asyncio.sleep(0.05)
+                continue
+            last_key = key
             r = await asyncio.to_thread(self.face.analyze, f.image)
             if r["faces"] == 1:
                 feats.append(r["feature"])

@@ -1,0 +1,13 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>DoseGuard: Departure Board</title><style>*{box-sizing:border-box;margin:0}html,body{width:1440px;height:900px;overflow:hidden}body{font-family:system-ui,-apple-system,sans-serif}.bar{height:72px;display:flex;align-items:center;padding:0 40px;gap:24px}.brand{font-weight:700;font-size:22px}.nav{display:flex;gap:6px;margin-left:24px}.nav a{padding:10px 18px;border-radius:999px;font-weight:700;font-size:17px}.nav a.on{background:#fff}.sp{flex:1}.stop{color:#fff;font-weight:700;padding:12px 22px;border-radius:12px;margin-left:28px}
+body{background:#f5f8fb;color:#14283d}.bar{background:#dceaf6}.stop{background:#c7372f}
+main{padding:44px 96px}h1{font-size:38px}.board{margin-top:28px;max-width:1100px;border-radius:14px;overflow:hidden;border:2px solid #14283d}
+.hd,.r{display:grid;grid-template-columns:170px 1fr 260px;padding:18px 26px;font-size:22px;font-variant-numeric:tabular-nums}
+.hd{background:#14283d;color:#fff;font-size:15px;font-weight:700;letter-spacing:.08em}.r{background:#fff}.r+.r{border-top:1.5px solid #dceaf6}
+.cell{font-weight:700;letter-spacing:.04em}.lit{background:#fff3f2}.lit .st{color:#c7372f;font-weight:700}
+.go{display:inline-block;margin-top:24px;background:#14283d;color:#fff;font-weight:700;font-size:22px;padding:18px 34px;border-radius:12px}
+</style></head><body><div class="bar"><div class="brand">DoseGuard</div><nav class="nav"><a class="on">Today</a><a>Dose steps</a><a>Ask</a></nav><div class="sp"></div><span class="stop">STOP</span></div>
+<main><h1>Today's doses</h1><div class="board"><div class="hd"><span>TIME</span><span>MEDICINE</span><span>STATUS</span></div>
+<div class="r"><span class="cell">08:00</span><span class="cell">BLUE TOKEN x1</span><span class="st">TAKEN</span></div>
+<div class="r lit"><span class="cell">13:20</span><span class="cell">BLUE TOKEN x1</span><span class="st">DUE NOW</span></div>
+<div class="r"><span class="cell">18:00</span><span class="cell">ORANGE TOKEN x1</span><span class="st">LATER</span></div>
+<div class="r"><span class="cell">22:00</span><span class="cell">BLUE TOKEN x1</span><span class="st">LATER</span></div></div><span class="go">Get my dose</span></main></body></html>

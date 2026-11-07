@@ -134,10 +134,14 @@ class HardwareAdapter:
         s = msg.get("s")
         if s and s != self.session:
             old, self.session = self.session, s
+            self.fw = msg.get("fw")
+            if self.fw is None and self._loop:
+                # HELLO was missed (sent before the port opened); STATUS also names the firmware.
+                self._loop.create_task(self.send({"cmd": "STATUS"}))
             self._push({"event": "SESSION", "old": old, "s": s})
         ev = msg.get("event")
-        if ev == "HELLO":
-            self.fw = msg.get("fw")
+        if msg.get("fw"):
+            self.fw = msg["fw"]
         before = dict(self.fields)
         for k in self.fields:
             if k in msg:
@@ -245,7 +249,10 @@ class SerialAdapter(HardwareAdapter):
         self._next_attempt = now + 2.0
         try:
             import serial  # pyserial
-            ser = serial.Serial(self.settings.serial_port, self.settings.serial_baud, timeout=0.1, write_timeout=0.5)
+            # exclusive: a second program (bench check, another app instance) gets "port busy" instead of
+            # silently splitting the byte stream. Serial monitors that ignore the lock are not stopped.
+            ser = serial.Serial(self.settings.serial_port, self.settings.serial_baud, timeout=0.1, write_timeout=0.5,
+                                exclusive=True)
         except Exception as exc:  # port missing, busy, or permission denied
             self.port_error = str(exc)
             return
@@ -321,6 +328,8 @@ class FakeController:
     """Behaves like the agreed firmware, including its failure modes. Every reading it
     produces is simulated and labeled as such in the UI."""
 
+    FW = "doseguard-sim-0.4"
+
     def __init__(self, settings: Settings, clock: Clock, emit: Callable[[str], None]):
         self.settings = settings
         self.clock = clock
@@ -344,7 +353,7 @@ class FakeController:
         self.seen: dict[int, str] = {}
         self.released: set[str] = set()
         self.last_ping = self.clock.monotonic()
-        self._send({"event": "HELLO", "fw": "doseguard-sim-0.3", "ch": list(CHANNELS)})
+        self._send({"event": "HELLO", "fw": self.FW, "ch": list(CHANNELS)})
 
     # -- link -------------------------------------------------------------------
     def _send(self, msg: dict) -> None:
@@ -378,7 +387,7 @@ class FakeController:
             self._stop(msg.get("id"))
             return
         if cmd == "STATUS":
-            self._send({"event": "STATUS", **self._compact()})
+            self._send({"event": "STATUS", **self._compact(), "fw": self.FW})
             return
         cid = msg.get("id")
         if not isinstance(cid, int):
@@ -452,7 +461,8 @@ class FakeController:
             self.home[c] = 1
             if mode == "lost_done":
                 return  # motion finished but the completion message is lost
-            self._send({"event": "CYCLE_DONE", "id": cid, "t": t, "c": c, "rev": self.rev})
+            # Status fields ride along so the host sees the motor idle the moment the cycle ends.
+            self._send({"event": "CYCLE_DONE", "id": cid, "c": c, **self._compact(), "t": t})
         except asyncio.CancelledError:
             self.motors[c] = "idle"
             raise
@@ -481,6 +491,8 @@ class FakeController:
             reason = "BAD_REV"
         elif t in self.released:
             reason = "ALREADY_RELEASED"
+        elif self.clock.monotonic() - self.last_ping > self.settings.watchdog_s:
+            reason = "HEARTBEAT_LOST"
         if reason:
             self._send({"event": "NACK", "id": cid, "reason": reason})
             return
@@ -506,7 +518,7 @@ class FakeController:
         self.fault = "STOPPED"
         if cid is not None:
             self._ack(cid)
-        self._send({"event": "STOPPED", "id": cid})
+        self._send({"event": "STOPPED", "id": cid, **self._compact()})
 
     def _reset(self, cid: int, msg: dict) -> None:
         self._ack(cid)

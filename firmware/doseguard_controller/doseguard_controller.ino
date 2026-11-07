@@ -3,7 +3,7 @@
   Board: classic ESP32 (ESP-WROOM-32), Arduino-ESP32 core 3.x. Library: ArduinoJson 7.x.
 
   STATUS: starting point for the hardware owner. Written to match the app's simulated
-  controller, NOT compiled or bench-tested yet. Verify pins, steps per pocket, servo angles
+  controller, compiles (arduino-cli, core 3.3.12) but NOT bench-tested yet. Verify pins, steps per pocket, servo angles
   and switch polarity on the real build before trusting it.
 
   Design rules it follows:
@@ -11,6 +11,9 @@
   - Every door edge and every pocket of rotor motion increments the tray revision.
   - RELEASE only when motors idle, door closed, rev matches, no fault, once per transaction.
   - No PING for 1 s during motion -> stop and FAULT HEARTBEAT_LOST.
+  - hA/hB report "position known" (homed since boot/RESET, no interrupted motion), not the raw
+    switch: after one pocket the rotor rests off its home switch. Once per full revolution the
+    switch must be pressed again, otherwise FAULT HOME_MISMATCH.
   - Never repeats a feed by itself. RESET reboots into a new unarmed session.
 */
 #include <Arduino.h>
@@ -22,11 +25,13 @@ const uint8_t PIN_SERVO = 23;
 const uint8_t PIN_HOME[2] = {33, 34};  // external 10k pull-ups to 3.3 V; switch to GND when at home
 const uint8_t PIN_DOOR = 35;           // external pull-up; switch closed (LOW) when the door is closed
 const uint8_t PIN_LED_OK = 13, PIN_LED_FAULT = 14;
+const char* FW_VERSION = "doseguard-0.2";
 
 // ---------------------------------------------------------------- calibration (per channel)
 long STEPS_PER_POCKET[2] = {683, 683};  // 4096 half-steps per rev / pockets; calibrate A and B separately
 const uint32_t STEP_INTERVAL_US = 1200; // 28BYJ-48 half-step speed; slower = more torque
 const uint32_t POCKET_TIMEOUT_MS = 4000;
+const int POCKETS_PER_REV[2] = {6, 6};  // pockets between home-switch presses; 0 disables the check
 const long HOMING_MAX_STEPS = 4096 + 512;
 const int SERVO_LOCK_US = 1000, SERVO_UNLOCK_US = 2000;  // pulse widths; check latch travel
 const uint32_t WATCHDOG_MS = 1000, DEBOUNCE_MS = 30;
@@ -43,7 +48,9 @@ struct Channel {
   int phase = 0;
   uint32_t lastStepUs = 0, pocketStartMs = 0;
   long cmdId = -1;
-  bool home = false;
+  bool home = false;   // raw switch (debounce not needed: only sampled at rest points)
+  bool homed = false;  // position known: what the host sees as hA/hB
+  int pocketIdx = 0;   // pockets since the home switch
 } ch[2];
 
 char session[5];
@@ -71,7 +78,7 @@ void send(JsonDocument& doc) {
 
 void addStatus(JsonDocument& d) {
   d["mA"] = MOTOR_NAMES[ch[0].state]; d["mB"] = MOTOR_NAMES[ch[1].state];
-  d["hA"] = ch[0].home ? 1 : 0; d["hB"] = ch[1].home ? 1 : 0;
+  d["hA"] = ch[0].homed ? 1 : 0; d["hB"] = ch[1].homed ? 1 : 0;
   d["door"] = doorClosed ? 1 : 0; d["servo"] = servoUnlocked ? "U" : "L"; d["rev"] = rev;
   if (txn.length()) d["txn"] = txn; else d["txn"] = nullptr;
   if (fault.length()) d["fault"] = fault; else d["fault"] = nullptr;
@@ -90,7 +97,10 @@ void servoWriteUs(int us) { ledcWrite(PIN_SERVO, (uint32_t)((65535UL * us) / 200
 void setServo(bool unlocked) { servoUnlocked = unlocked; servoWriteUs(unlocked ? SERVO_UNLOCK_US : SERVO_LOCK_US); }
 
 void raiseFault(const char* reason, int c = -1, long id = -1) {
-  for (int i = 0; i < 2; i++) { if (ch[i].state == MOVING || ch[i].state == HOMING) ch[i].state = (i == c) ? MFAULT : IDLE; coilsOff(i); }
+  for (int i = 0; i < 2; i++) {
+    if (ch[i].state == MOVING || ch[i].state == HOMING) { ch[i].state = (i == c) ? MFAULT : IDLE; ch[i].homed = false; }
+    coilsOff(i);
+  }
   fault = reason;
   JsonDocument d; d["event"] = "FAULT"; d["reason"] = reason;
   if (c >= 0) d["c"] = c == 0 ? "A" : "B";
@@ -106,7 +116,7 @@ void cmdDispense(long id, JsonDocument& m) {
   if (c < 0) return nack(id, "UNKNOWN_CHANNEL");
   if (n < 1 || n > 3) return nack(id, "BAD_QUANTITY");
   if (fault.length()) return nack(id, "FAULT");
-  if (ch[c].state != IDLE || !ch[c].home) return nack(id, "NOT_READY");
+  if (ch[c].state != IDLE || !ch[c].homed) return nack(id, "NOT_READY");
   txn = String((const char*)(m["t"] | ""));
   event("ACK", id);
   ch[c].state = MOVING; ch[c].cmdId = id;
@@ -137,10 +147,13 @@ void cmdLock(long id) {
 }
 
 void cmdStop(long id) {
-  for (int i = 0; i < 2; i++) { ch[i].state = IDLE; ch[i].stepsLeft = 0; coilsOff(i); }
+  for (int i = 0; i < 2; i++) {
+    if (ch[i].state == MOVING || ch[i].state == HOMING) ch[i].homed = false;  // stopped mid-motion: position unknown
+    ch[i].state = IDLE; ch[i].stepsLeft = 0; coilsOff(i);
+  }
   fault = "STOPPED";
   if (id >= 0) event("ACK", id);
-  JsonDocument d; d["event"] = "STOPPED"; if (id >= 0) d["id"] = id; else d["id"] = nullptr; send(d);
+  JsonDocument d; d["event"] = "STOPPED"; if (id >= 0) d["id"] = id; else d["id"] = nullptr; addStatus(d); send(d);
 }
 
 void handleLine(const char* line) {
@@ -155,7 +168,7 @@ void handleLine(const char* line) {
   }
   if (strcmp(m["s"] | "", session) != 0) { nack(m["id"] | -1L, "BAD_SESSION"); return; }
   if (strcmp(cmd, "STOP") == 0) { cmdStop(m["id"] | -1L); return; }
-  if (strcmp(cmd, "STATUS") == 0) { JsonDocument d; d["event"] = "STATUS"; addStatus(d); send(d); return; }
+  if (strcmp(cmd, "STATUS") == 0) { JsonDocument d; d["event"] = "STATUS"; addStatus(d); d["fw"] = FW_VERSION; send(d); return; }
   if (!m["id"].is<long>()) { nack(-1, "MISSING_ID"); return; }
   long id = m["id"];
   // Duplicate IDs: same payload -> ACK dup (no repeat); different payload -> NACK.
@@ -191,7 +204,7 @@ void readSwitches() {
   if (raw != doorClosed && millis() - doorChangedMs > DEBOUNCE_MS) {
     doorClosed = raw; rev++;
     JsonDocument d; d["event"] = "SWITCH"; d["door"] = doorClosed ? 1 : 0;
-    d["hA"] = ch[0].home ? 1 : 0; d["hB"] = ch[1].home ? 1 : 0; d["rev"] = rev; send(d);
+    d["hA"] = ch[0].homed ? 1 : 0; d["hB"] = ch[1].homed ? 1 : 0; d["rev"] = rev; send(d);
   }
 }
 
@@ -203,7 +216,7 @@ void runMotors() {
     if (nowUs - k.lastStepUs < STEP_INTERVAL_US) continue;
     k.lastStepUs = nowUs;
     if (k.state == HOMING) {
-      if (k.home) { k.state = IDLE; coilsOff(c); continue; }
+      if (k.home) { k.state = IDLE; k.homed = true; k.pocketIdx = 0; coilsOff(c); continue; }
       if (--k.stepsLeft <= 0) { raiseFault("HOMING_TIMEOUT", c); continue; }
       stepOnce(c);
       continue;
@@ -212,12 +225,19 @@ void runMotors() {
     k.stepsLeft--; k.stepsInPocket++;
     if (k.stepsInPocket >= STEPS_PER_POCKET[c]) {  // one pocket delivered (motion only)
       k.stepsInPocket = 0; rev++; k.pocketStartMs = millis();
+      if (POCKETS_PER_REV[c] > 0) {
+        k.pocketIdx = (k.pocketIdx + 1) % POCKETS_PER_REV[c];
+        // A full revolution must land on the home switch again; if not, steps were skipped or the rotor slipped.
+        if (k.pocketIdx == 0 && !k.home) { raiseFault("HOME_MISMATCH", c, k.cmdId); continue; }
+      }
     } else if (millis() - k.pocketStartMs > POCKET_TIMEOUT_MS) {
       raiseFault("MOTION_TIMEOUT", c, k.cmdId); continue;
     }
     if (k.stepsLeft <= 0) {
       k.state = IDLE; coilsOff(c);
-      JsonDocument d; d["event"] = "CYCLE_DONE"; d["id"] = k.cmdId; d["t"] = txn; d["c"] = c == 0 ? "A" : "B"; d["rev"] = rev; send(d);
+      JsonDocument d; d["event"] = "CYCLE_DONE"; d["id"] = k.cmdId; d["c"] = c == 0 ? "A" : "B";
+      addStatus(d); d["t"] = txn;  // status fields ride along so the host sees idle at once
+      send(d);
     }
   }
 }
@@ -242,9 +262,10 @@ void setup() {
   lastPingMs = millis();
   for (int c = 0; c < 2; c++) {  // rehome each rotor separately at boot
     ch[c].home = digitalRead(PIN_HOME[c]) == LOW;
-    if (!ch[c].home) { ch[c].state = HOMING; ch[c].stepsLeft = HOMING_MAX_STEPS; }
+    if (ch[c].home) { ch[c].homed = true; ch[c].pocketIdx = 0; }
+    else { ch[c].state = HOMING; ch[c].stepsLeft = HOMING_MAX_STEPS; }
   }
-  JsonDocument d; d["event"] = "HELLO"; d["fw"] = "doseguard-0.1"; JsonArray a = d["ch"].to<JsonArray>(); a.add("A"); a.add("B"); send(d);
+  JsonDocument d; d["event"] = "HELLO"; d["fw"] = FW_VERSION; JsonArray a = d["ch"].to<JsonArray>(); a.add("A"); a.add("B"); send(d);
 }
 
 void loop() {

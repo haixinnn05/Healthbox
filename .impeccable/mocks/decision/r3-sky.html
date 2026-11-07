@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>DoseGuard: Morning Sky</title>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:900px;overflow:hidden;background:#F7FBFF;color:#1B3A5C;font-family:"Atkinson Hyperlegible Next",system-ui,sans-serif}
+.sky{position:relative;height:330px;background:linear-gradient(180deg,#9CCBF0 0%,#CFE6FA 62%,#F7FBFF 100%)}
+header{position:relative;z-index:2;height:76px;display:flex;align-items:center;gap:36px;padding:0 56px}
+.brand{font-weight:800;font-size:24px}
+nav{display:flex;gap:6px}
+nav a{font-size:19px;font-weight:600;padding:12px 22px;border-radius:14px;color:#1B3A5C}
+nav a.on{background:rgba(247,251,255,.85)}
+.sp{flex:1}.disp{font-size:18px;font-weight:600}
+.stop{margin-left:36px;background:#C8322B;color:#fff;font-weight:800;font-size:19px;letter-spacing:.06em;padding:13px 30px;border-radius:14px}
+.arc{position:absolute;left:120px;right:120px;top:120px;height:380px;border-radius:50% 50% 0 0/100% 100% 0 0;border:2px dashed rgba(27,58,92,.35);border-bottom:0}
+.sun{position:absolute;left:330px;top:150px;width:64px;height:64px;border-radius:50%;background:#FFD98A;box-shadow:0 0 0 14px #FFEFC9}
+.dot{position:absolute;width:22px;height:22px;border-radius:50%;background:#F7FBFF;border:3px solid #1B3A5C}
+.dot.done{background:#1B3A5C}
+.lbl{position:absolute;font-size:17px;font-weight:600;transform:translateX(-40%)}
+.greet{position:absolute;left:56px;bottom:30px}
+.greet h1{font-size:42px;font-weight:800;letter-spacing:-.02em}
+.greet p{font-size:20px;margin-top:6px;color:#2C5079}
+main{display:grid;grid-template-columns:1fr 420px;gap:56px;padding:20px 56px}
+.card{background:#fff;border-radius:24px;padding:36px 40px;box-shadow:0 10px 40px rgba(27,58,92,.10)}
+.card .t{font-size:18px;font-weight:800;letter-spacing:.04em;color:#2C5079}
+.card h2{font-size:40px;font-weight:800;margin:10px 0 6px}
+.card p{font-size:21px;color:#2C5079}
+.pl{display:flex;gap:22px;margin:26px 0}
+.pl span{font-size:19px;font-weight:600;padding:12px 18px;border-radius:14px;background:#EEF6FD}
+.go{display:inline-block;font-size:24px;font-weight:800;background:#1B3A5C;color:#fff;padding:20px 40px;border-radius:16px}
+aside h3{font-size:22px;font-weight:800;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;padding:16px 0;border-bottom:1px solid #DCEAF7;font-size:19px}
+.need{margin-top:28px;background:#EEF6FD;border-radius:20px;padding:22px}
+.need h3{margin-bottom:6px}.need p{font-size:18px}
+.need .b{display:inline-block;margin-top:14px;font-size:19px;font-weight:800;padding:12px 22px;border-radius:14px;background:#fff}
+</style></head><body>
+<div class="sky"><header><span class="brand">DoseGuard</span><nav><a class="on">Today</a><a>Ask</a><a>Setup</a></nav><span class="sp"></span><span class="disp">Aa Display</span><span class="stop">STOP</span></header>
+<div class="arc"></div><span class="sun"></span>
+<span class="dot done" style="left:300px;top:205px"></span><span class="lbl" style="left:300px;top:236px">8:00</span>
+<span class="dot" style="left:710px;top:118px"></span><span class="lbl" style="left:712px;top:150px">1:00</span>
+<span class="dot" style="left:1150px;top:250px"></span><span class="lbl" style="left:1152px;top:282px">9:00</span>
+<div class="greet"><h1>Good morning, Jackson</h1><p>Saturday, November 7</p></div></div>
+<main><div class="card"><span class="t">DUE NOW, 8:00 AM</span><h2>Morning tablets</h2><p>Take with a glass of water.</p>
+<div class="pl"><span>1 blue tablet</span><span>1 orange capsule</span></div><span class="go">Take my dose</span></div>
+<aside><h3>Later today</h3><div class="row"><span>1:00 PM</span><b>Vitamin</b></div><div class="row"><span>9:00 PM</span><b>Evening tablet</b></div>
+<div class="need"><h3>When you need it</h3><p>Headache relief. Ready now, 0 of 3 today.</p><span class="b">I need this</span></div></aside></main>
+</body></html>

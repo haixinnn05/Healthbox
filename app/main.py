@@ -3,6 +3,7 @@
 Run:  .venv/bin/python -m app.main     (or ./run.sh)"""
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -13,7 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -60,6 +61,11 @@ class ReminderCmd(Cmd):
 
 class DoseStart(Cmd):
     dose_id: str = Field(max_length=32)
+    plan_version: int
+
+
+class AsNeededRequest(Cmd):
+    entry_key: str = Field(min_length=1, max_length=32)
     plan_version: int
 
 
@@ -237,23 +243,24 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
 
     @app.get("/api/camera/frame")
     async def camera_frame(request: Request, role: str = "face"):
-        data = S(request).camera.preview_jpeg("tray" if role == "tray" else "face")
+        data = await asyncio.to_thread(S(request).camera.preview_jpeg, "tray" if role == "tray" else "face")
         if data is None:
             return Response(status_code=204)
         return Response(data, media_type="image/jpeg")
 
+    @app.get("/api/camera/stream")
+    async def camera_stream(request: Request, role: str = "face"):
+        camera = S(request).camera
+        if camera.simulated:
+            return Response(status_code=204)
+        return StreamingResponse(camera.preview_stream("tray" if role == "tray" else "face"),
+                                 media_type="multipart/x-mixed-replace; boundary=frame",
+                                 headers={"X-Accel-Buffering": "no"})
+
     @app.get("/api/camera/face-preview")
     async def face_preview(request: Request):
         """Live positioning hint for enrollment: face count and detector confidence only."""
-        import asyncio
-        svc = S(request)
-        if svc.camera.simulated or not svc.vision.face.available():
-            return {"available": False}
-        f = await svc.camera.frame("face")
-        if f is None:
-            return {"available": True, "faces": None}
-        r = await asyncio.to_thread(svc.vision.face.analyze, f.image)
-        return {"available": True, "faces": r["faces"], "score": round(r.get("score", 0.0), 2)}
+        return await S(request).vision.face_preview()
 
     @app.get("/api/history")
     async def get_history(request: Request, limit: int = 50):
@@ -312,6 +319,12 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     @app.post("/api/doses/start")
     async def start(request: Request, body: DoseStart):
         return ok(request, body.request_id, await S(request).engine.start_dose(body.request_id, body.dose_id, body.plan_version))
+
+    @app.post("/api/doses/request")
+    async def request_as_needed(request: Request, body: AsNeededRequest):
+        """An as-needed dose on request. Limits, arming and every workflow check are enforced by the engine."""
+        return ok(request, body.request_id, await S(request).engine.request_as_needed(body.request_id, body.entry_key,
+                                                                                       body.plan_version))
 
     @app.post("/api/doses/check")
     async def check(request: Request, body: TxnCmd):
@@ -626,6 +639,9 @@ def _create_demo_plan(svc: Services) -> None:
          "delivery_mode": "DEVICE", "class_id": "orange", "cartridge": "B", "times": []},
         {"entry_key": "demoR", "label": "Vitamin reminder (fictional)", "strength_text": None, "quantity": 1,
          "delivery_mode": "REMINDER_ONLY", "class_id": None, "cartridge": None, "times": []},
+        {"entry_key": "demoP", "label": "Headache relief (fictional)", "strength_text": "orange", "quantity": 1,
+         "delivery_mode": "DEVICE", "class_id": "orange", "cartridge": "B", "times": [],
+         "schedule": "AS_NEEDED", "min_interval_hours": 4, "max_per_day": 3},
     ]
     with svc.store.tx() as conn:
         conn.execute("UPDATE plan_versions SET active=0 WHERE demo=1")

@@ -1,6 +1,9 @@
 """Plan validation and confirmation. A plan becomes active only after the user confirms
 every entry, its delivery mode, quantity, recurring times and the timezone. Edits create
-a new immutable version and only replace occurrences that have not been issued yet."""
+a new immutable version and only replace occurrences that have not been issued yet.
+
+An entry is SCHEDULED (recurring local times, the default) or AS_NEEDED (no times; taken on
+request within a minimum interval and a rolling 24 hour maximum, enforced by the server)."""
 from __future__ import annotations
 
 import re
@@ -12,11 +15,33 @@ from .store import Store, dumps
 from .timeutil import local_date, upcoming_dst_issues
 
 DELIVERY_MODES = ("DEVICE", "REMINDER_ONLY")
+SCHEDULES = ("SCHEDULED", "AS_NEEDED")
+MIN_INTERVAL_HOURS = (1, 24)
+MAX_PER_DAY = (1, 8)
 HHMM = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
 
 def slot_id(entry_key: str, hhmm: str) -> str:
     return f"{entry_key}@{hhmm.replace(':', '')}"
+
+
+def is_as_needed(entry: dict) -> bool:
+    """Entries stored before as-needed support have no schedule field: they are SCHEDULED."""
+    return entry.get("schedule") == "AS_NEEDED"
+
+
+def _whole_number(value) -> int | None:
+    """A whole number from JSON (5 or "5"). Rejects booleans, fractions and text, so a safety
+    limit is never silently rounded."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str) and re.fullmatch(r"\s*\d{1,3}\s*", value):
+        return int(value)
+    return None
 
 
 def validate_entries(store: Store, entries: list[dict], max_per_channel: int,
@@ -54,16 +79,32 @@ def validate_entries(store: Store, entries: list[dict], max_per_channel: int,
                 cartridge = classes[class_id]["cartridge"]
         else:
             class_id = None
+        schedule = str(raw.get("schedule") or "SCHEDULED").upper()
+        if schedule not in SCHEDULES:
+            err("schedule", "Choose Scheduled or As needed.")
         times = [str(t).strip() for t in (raw.get("times") or [])]
-        if not times:
-            err("times", "Add at least one time.")
-        bad = [t for t in times if not HHMM.match(t)]
-        if bad:
-            err("times", "Times must look like 08:00 (24 hour).")
-        if len(set(times)) != len(times):
-            err("times", "Times must not repeat.")
-        if len(times) > 6:
-            err("times", "At most six times per entry.")
+        min_interval = max_day = None
+        if schedule == "AS_NEEDED":
+            if times:
+                err("times", "As-needed entries have no times. Remove the times or choose Scheduled.")
+            min_interval = _whole_number(raw.get("min_interval_hours"))
+            lo, hi = MIN_INTERVAL_HOURS
+            if min_interval is None or not lo <= min_interval <= hi:
+                err("min_interval_hours", f"Set the minimum time between doses: a whole number of hours from {lo} to {hi}.")
+            max_day = _whole_number(raw.get("max_per_day"))
+            lo, hi = MAX_PER_DAY
+            if max_day is None or not lo <= max_day <= hi:
+                err("max_per_day", f"Set the most doses in 24 hours: a whole number from {lo} to {hi}.")
+        else:
+            if not times:
+                err("times", "Add at least one time.")
+            bad = [t for t in times if not HHMM.match(t)]
+            if bad:
+                err("times", "Times must look like 08:00 (24 hour).")
+            if len(set(times)) != len(times):
+                err("times", "Times must not repeat.")
+            if len(times) > 6:
+                err("times", "At most six times per entry.")
         label_id = str(raw.get("label_id") or "").strip() or None
         if label_id and not store.q1("SELECT 1 FROM label_scans WHERE label_id=?", (label_id,)):
             label_id = None
@@ -78,7 +119,8 @@ def validate_entries(store: Store, entries: list[dict], max_per_channel: int,
         out.append({
             "entry_key": key, "label": label, "strength_text": strength, "quantity": qty,
             "delivery_mode": mode, "class_id": class_id, "cartridge": cartridge,
-            "times": sorted(times), "label_id": label_id,
+            "times": sorted(times) if schedule != "AS_NEEDED" else [], "label_id": label_id,
+            "schedule": schedule, "min_interval_hours": min_interval, "max_per_day": max_day,
         })
     # One shared tray: same-time device entries are dispensed together; bound per channel.
     per_slot: dict[tuple[str, str], int] = {}

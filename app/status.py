@@ -5,6 +5,9 @@ import json
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
+from . import as_needed
+from .plans import is_as_needed
+from .reasons import message
 from .timeutil import fmt_local, iso, local_date, parse
 
 
@@ -36,7 +39,9 @@ def _card(row: dict, tz: ZoneInfo, classes: dict) -> dict:
         "due_day": _day_label(row["local_date"], tz),
         "workflow_state": row["workflow_state"], "txn_id": row["txn_id"], "outcome": row["outcome"],
         "collection": row["collection"], "self_report": row["self_report"], "review_reason": row["review_reason"],
-        "reminder": {
+        "schedule": row["schedule"], "as_needed": row["schedule"] == "AS_NEEDED",
+        # As-needed doses have no reminder.
+        "reminder": None if row["reminder_id"] is None else {
             "reminder_id": row["reminder_id"], "state": row["r_state"], "snoozed_until": row["snoozed_until"],
             "snoozed_until_local": fmt_local(parse(row["snoozed_until"]), tz),
             "sound_repeat_count": row["sound_repeat_count"], "acknowledged_at": row["acknowledged_at"],
@@ -47,7 +52,7 @@ def _card(row: dict, tz: ZoneInfo, classes: dict) -> dict:
 
 DOSE_SQL = (
     "SELECT d.*, r.reminder_id, r.state AS r_state, r.snoozed_until, r.sound_repeat_count, r.acknowledged_at, r.close_reason"
-    " FROM doses d JOIN reminders r ON r.dose_id=d.dose_id"
+    " FROM doses d LEFT JOIN reminders r ON r.dose_id=d.dose_id"
 )
 
 
@@ -57,7 +62,7 @@ def today_cards(services) -> list[dict]:
     demo = store.demo
     today = local_date(store.clock.now(), tz).isoformat()
     rows = store.q(
-        DOSE_SQL + " WHERE d.demo=? AND (d.local_date=? OR r.state IN ('DUE','SNOOZED','NEEDS_REVIEW')"
+        DOSE_SQL + " WHERE d.demo=? AND d.schedule='SCHEDULED' AND (d.local_date=? OR r.state IN ('DUE','SNOOZED','NEEDS_REVIEW')"
         " OR d.workflow_state IN ('PERSON_CHECK','EMPTY_TRAY_CHECK','DISPENSING','DOSE_CHECK','RECIPIENT_RECHECK','RELEASE_PENDING',"
         "'RELEASED','FAULT','UNCERTAIN')) ORDER BY d.due_at_utc, d.label",
         (demo, today),
@@ -91,6 +96,7 @@ def build_status(services) -> dict:
         "timezone": str(tz.key),
         "demo_mode": bool(demo),
         "today": cards,
+        "as_needed": as_needed_items(store, plan, tz, now),
         "next_dose": _card(upcoming, tz, store.class_by_id()) if upcoming else None,
         "due_count": sum(1 for c in cards if c["reminder"]["state"] in ("DUE", "NEEDS_REVIEW")),
         "sounds": sounds,
@@ -111,11 +117,44 @@ def build_status(services) -> dict:
     }
 
 
+def as_needed_items(store, plan: dict | None, tz: ZoneInfo, now) -> list[dict]:
+    """One item per AS_NEEDED entry of the active plan, with its server-side availability."""
+    if not plan:
+        return []
+    classes = store.class_by_id()
+    out = []
+    for e in plan["entries"]:
+        if not is_as_needed(e):
+            continue
+        lim = as_needed.evaluate(store, e, plan["demo"], now)
+        cls = classes.get(e.get("class_id")) if e.get("class_id") else None
+        last = lim["last_dose"]
+        code = lim["blocked_reason"]
+        when = as_needed.when_local(parse(lim["next_available_at"]), tz, now)
+        out.append({
+            "entry_key": e["entry_key"], "plan_version_id": plan["plan_version_id"], "label": e["label"],
+            "strength_text": e.get("strength_text"), "quantity": e["quantity"], "delivery_mode": e["delivery_mode"],
+            "class_id": e.get("class_id"), "class_label": cls["label"] if cls else None,
+            "class_color": cls["color"] if cls else None, "cartridge": e.get("cartridge"),
+            "min_interval_hours": e["min_interval_hours"], "max_per_day": e["max_per_day"],
+            "taken_last_24h": lim["taken_last_24h"],
+            "last_taken_at": lim["last_taken_at"], "last_taken_local": as_needed.when_local(parse(lim["last_taken_at"]), tz, now),
+            "available": lim["available"], "next_available_at": lim["next_available_at"], "next_available_local": when,
+            "blocked_reason": code, "blocked_message": message(code, when=when) if code else None,
+            "in_progress_dose_id": lim["in_progress_dose_id"],
+            "last_dose": None if not last else {
+                "dose_id": last["dose_id"], "requested_at": last["created_at"], "workflow_state": last["workflow_state"],
+                "outcome": last["outcome"], "collection": last["collection"], "self_report": last["self_report"],
+                "txn_id": last["txn_id"]},
+        })
+    return out
+
+
 def history(services, limit: int = 50) -> list[dict]:
     store = services.store
     tz = tz_for(services)
     rows = store.q(
-        DOSE_SQL + " WHERE d.demo=? AND (r.state!='SCHEDULED' OR d.workflow_state!='NOT_STARTED')"
+        DOSE_SQL + " WHERE d.demo=? AND (r.state!='SCHEDULED' OR d.workflow_state!='NOT_STARTED' OR d.schedule='AS_NEEDED')"
         " ORDER BY d.due_at_utc DESC LIMIT ?", (store.demo, min(max(limit, 1), 200)))
     classes = store.class_by_id()
     return [_card(r, tz, classes) for r in rows]

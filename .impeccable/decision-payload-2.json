@@ -1,0 +1,78 @@
+{
+  "title": "More options for DoseGuard",
+  "question": "A fresh hand: the roll assigned the Fridge Reminder Card. Keep it, take an alternate, or re-roll again.",
+  "options": [
+    {
+      "id": "assigned", "kind": "assigned", "label": "Fridge Reminder Card", "kicker": "THE ROLL",
+      "lineage": "the clinic reminder card stuck on the fridge with today's times written in",
+      "thesis": "Today is one calm card of time slots; the due slot carries a red pen box, finished slots get a clear tick.",
+      "palette": ["#ffffff", "#e3f0fb", "#9cc8ea", "#16324f", "#c62f2b"],
+      "materials": ["light-blue card stock", "ruled time slots", "red pen tick boxes"],
+      "viewport": "White page, light-blue top bar; Today is one large card of ruled time rows, the due row boxed in red with Get my dose beside it.",
+      "risk": "Can look plain if the tick and box states are drawn timidly.",
+      "raised": [
+        {"from": "challenger-saville", "raise": "Only the due slot is shown at full strength; every other slot steps back."},
+        {"from": "challenger-manual", "raise": "The dose steps show a tab rail with how far along you are and how much is left."},
+        {"from": "challenger-console", "raise": "STOP and Skip this dose sit apart with empty space, never next to everyday buttons."},
+        {"from": "challenger-laban", "raise": "Time always reads one way, top to bottom, on every screen."}
+      ],
+      "html": ".impeccable/mocks/decision/r2-assigned.html"
+    },
+    {
+      "id": "model-pick", "kind": "pick", "label": "Pharmacy Prescription Label", "kicker": "IMPECCABLE’S PICK",
+      "lineage": "printed pharmacy labels and red auxiliary warning stickers",
+      "thesis": "Every dose reads like its pharmacy label: name, amount, time, with a red sticker only when action is needed.",
+      "palette": ["#ffffff", "#d8ebf9", "#0f3d66", "#d22f27"],
+      "materials": ["label stock", "blue pharmacy band", "red warning sticker"],
+      "viewport": "Light-blue band header; the due dose shown as a large label with a red TAKE NOW sticker and one big button.",
+      "risk": "Familiar health-app territory; the label idea is what many pharmacy apps already echo.",
+      "html": ".impeccable/mocks/decision/r2-pick.html"
+    },
+    {
+      "id": "challenger-wallet", "kind": "challenger", "catalogId": "vernacular-ephemera-jet-age-ticket-wallet",
+      "label": "Paper Ticket Wallet", "verdict": "competitive",
+      "lineage": "1960s airline ticket wallets and carbon coupons",
+      "thesis": "Each dose step is a coupon you tear off in order; used steps get stamped, nothing disappears.",
+      "palette": ["#ffffff", "#e1eef9", "#13315c", "#cf2e2e"],
+      "materials": ["coupon stock", "carbon numerals", "stamped states"],
+      "viewport": "Today shows the current dose as a ticket with stub coupons for each step; stamps mark done steps.",
+      "case": "Fuses cleanly: stamped, never-erased states are perfect for taken-or-not clarity; loses some identification with a medicine setting.",
+      "risk": "Travel flavour could distract if the ticket shape gets ornate.",
+      "html": ".impeccable/mocks/decision/r2-wallet.html",
+      "hero": "https://impeccable.style/worlds/cards/vernacular-ephemera-jet-age-ticket-wallet-hero.webp"
+    },
+    {
+      "id": "challenger-flap", "kind": "challenger", "catalogId": "signals-instruments-split-flap-concourse",
+      "label": "Station Departure Board", "verdict": "competitive",
+      "lineage": "railway split-flap boards",
+      "thesis": "Doses as departures in fixed rows; a change flips into place and the due row lights.",
+      "palette": ["#ffffff", "#dceaf6", "#14283d", "#c7372f"],
+      "materials": ["fixed-cell rows", "flip letters", "row lamps"],
+      "viewport": "Today is a light departure board of dose rows ordered by time, the due row lit with Get my dose.",
+      "case": "Fuses on clarity (time-ordered, held state) but its native black board fights the pinned light theme.",
+      "risk": "Flip animations can feel busy for anxious users.",
+      "html": ".impeccable/mocks/decision/r2-flap.html",
+      "hero": "https://impeccable.style/worlds/cards/signals-instruments-split-flap-concourse-hero.webp"
+    },
+    {"id": "challenger-saville", "kind": "challenger", "catalogId": "brand-identity-canon-saville-catalog-sleeve", "label": "Factory Records Catalog", "verdict": "declined",
+     "lineage": "Peter Saville sleeves", "thesis": "Colour codes instead of words on matte black.", "palette": ["#111111", "#ffffff", "#e63b2e"], "materials": ["matte black", "colour code strips"],
+     "viewport": "A black field with a white line plot.", "risk": "Codes instead of words fail patients.", "case": "Loses both axes.", "kept": "Only the active item is shown at full strength."},
+    {"id": "challenger-manual", "kind": "challenger", "catalogId": "rw-manual-acetate-tab-board", "label": "Acetate Manual Tabs", "verdict": "declined",
+     "lineage": "boxed software manuals", "thesis": "Acetate leaves over coloured divider boards.", "palette": ["#f2b01e", "#f7f6f1", "#2a2a2a"], "materials": ["acetate", "tab rail"],
+     "viewport": "An open manual with a tab rail.", "risk": "Layered transparency hurts legibility.", "case": "Loses both axes.", "kept": "A tab rail shows progress and what remains."},
+    {"id": "challenger-console", "kind": "challenger", "catalogId": "digital-design-canon-dark-first-developer-console", "label": "Dark Developer Console", "verdict": "declined",
+     "lineage": "dark IDE consoles", "thesis": "Graphite panels with hairline seams.", "palette": ["#1e2227", "#2b3036", "#61afef"], "materials": ["graphite", "hairline seams"],
+     "viewport": "Tiled dark panels.", "risk": "Dark tooling feel contradicts the light, calm brief.", "case": "Loses both axes.", "kept": "Dangerous actions sit apart with empty space."},
+    {"id": "challenger-laban", "kind": "challenger", "catalogId": "notation-diagram-systems-labanotation", "label": "Dance Notation Score", "verdict": "declined",
+     "lineage": "Labanotation", "thesis": "A centre staff read upward.", "palette": ["#ffffff", "#111111", "#cccccc"], "materials": ["score paper", "shaded blocks"],
+     "viewport": "A vertical score.", "risk": "Unreadable without training.", "case": "Loses both axes.", "kept": "Time always reads in one consistent direction."}
+  ],
+  "reroll": {"registers": ["safer", "bolder"]},
+  "buildPath": {"value": "code"},
+  "canon": true,
+  "canonCard": {"kind": "canon", "label": "The category standard", "thesis": "A clean medication app like Apple Health: white rows, blue accent, red for alerts.",
+    "palette": ["#ffffff", "#f2f4f7", "#0a6cd6", "#e5372e"], "materials": ["white list rows", "system type"],
+    "viewport": "A list of today's medicines with times and a Take button on the due one.", "risk": "Indistinguishable from every medication app by design.",
+    "html": ".impeccable/mocks/decision/canon.html"},
+  "steer": true
+}

@@ -15,10 +15,13 @@ import json
 import logging
 import secrets
 import uuid
+from zoneinfo import ZoneInfo
 
+from . import as_needed
 from .config import Settings
 from .errors import WorkflowError
 from .hardware import HardwareAdapter
+from .plans import is_as_needed
 from .reasons import block, message
 from .reminders import ReminderService
 from .store import Store, dumps
@@ -141,6 +144,9 @@ class WorkflowEngine:
                      (reason, self.store.now(), txn["txn_id"]))
         conn.execute(f"UPDATE doses SET workflow_state='NOT_STARTED', txn_id=NULL, updated_at=? WHERE dose_id IN ({_qs(_ids(txn))})",
                      (self.store.now(), *_ids(txn)))
+        # An as-needed dose is single use: cancelled before dispensing, it stays in history and never counts.
+        conn.execute(f"UPDATE doses SET outcome='CANCELLED_BEFORE_DISPENSE', updated_at=? WHERE schedule='AS_NEEDED'"
+                     f" AND dose_id IN ({_qs(_ids(txn))})", (self.store.now(), *_ids(txn)))
         self.store.event(conn, "WORKFLOW_CANCELLED", txn_id=txn["txn_id"], reason=reason)
 
     def _is_armed(self) -> bool:
@@ -205,14 +211,60 @@ class WorkflowEngine:
             return result
 
     # ------------------------------------------------------------------ start
+    def _start_preconditions(self, plan: dict | None) -> None:
+        """Checks every new transaction passes, whether it starts from a due reminder or an as-needed request."""
+        if self.active_txn():
+            raise WorkflowError(409, "ANOTHER_DOSE_ACTIVE")
+        blocks = self._device_blocks()
+        if blocks:
+            status = 503 if blocks[0]["code"] == "DEVICE_DISCONNECTED" else 409
+            raise WorkflowError(status, blocks[0]["code"], blocks[0]["message"], reason_codes=[b["code"] for b in blocks])
+        if not plan or not self.store.person(plan["person_id"]):
+            raise WorkflowError(409, "NOT_ENROLLED")
+
+    def _tray_totals(self, group: list[dict]) -> tuple[dict, dict]:
+        by_class: dict[str, int] = {}
+        by_channel: dict[str, int] = {}
+        for g in group:
+            by_class[g["class_id"]] = by_class.get(g["class_id"], 0) + g["quantity"]
+            by_channel[g["cartridge"]] = by_channel.get(g["cartridge"], 0) + g["quantity"]
+        if not by_channel or any(n > self.settings.max_tokens_per_channel or n < 1 for n in by_channel.values()):
+            raise WorkflowError(409, "QUANTITY_LIMIT")
+        return by_class, by_channel
+
+    def _open_txn(self, conn, request_id: str, group: list[dict], plan: dict, demo: int, by_class: dict,
+                  by_channel: dict, lead_dose_id: str) -> dict:
+        """Create the transaction at PERSON_CHECK and attach its doses. Caller holds the store transaction."""
+        txn_id = uuid.uuid4().hex[:12]
+        short = secrets.token_hex(3)
+        ids = [g["dose_id"] for g in group]
+        now = self.store.now()
+        conn.execute(
+            "INSERT INTO transactions (txn_id, short_id, request_id, dose_ids_json, expected_json, state, controller_session,"
+            " demo, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (txn_id, short, request_id, dumps(ids), dumps({"by_class": by_class, "by_channel": by_channel,
+                                                           "plan_version_id": plan["plan_version_id"],
+                                                           "person_id": plan["person_id"]}),
+             "PERSON_CHECK", self.hw.session, demo, now, now),
+        )
+        n = conn.execute(f"UPDATE doses SET workflow_state='PERSON_CHECK', txn_id=?, updated_at=? WHERE dose_id IN ({_qs(ids)})"
+                         " AND workflow_state='NOT_STARTED'", (txn_id, now, *ids)).rowcount
+        if n != len(ids):
+            raise WorkflowError(409, "ALREADY_STARTED")
+        self.store.event(conn, "DOSE_STARTED", dose_id=lead_dose_id, txn_id=txn_id,
+                         details={"doses": ids, "by_class": by_class, "by_channel": by_channel})
+        return {"txn_id": txn_id, "state": "PERSON_CHECK", "dose_ids": ids}
+
     async def start_dose(self, request_id: str, dose_id: str, plan_version_id: int) -> dict:
         async def fn():
-            d = self.store.q1("SELECT d.*, r.state AS reminder_state FROM doses d JOIN reminders r ON r.dose_id=d.dose_id"
+            d = self.store.q1("SELECT d.*, r.state AS reminder_state FROM doses d LEFT JOIN reminders r ON r.dose_id=d.dose_id"
                               " WHERE d.dose_id=?", (dose_id,))
             if not d:
                 raise WorkflowError(404, "NOT_FOUND", "Dose not found.")
             if d["demo"] != self.store.demo:
                 raise WorkflowError(409, "DEMO_MISMATCH")
+            if d["schedule"] == "AS_NEEDED" or d["reminder_state"] is None:
+                raise WorkflowError(409, "INVALID_TRANSITION", "As-needed doses start with a new request.")
             if d["delivery_mode"] != "DEVICE":
                 raise WorkflowError(409, "REMINDER_ONLY")
             if d["plan_version_id"] != plan_version_id:
@@ -221,49 +273,84 @@ class WorkflowEngine:
                 raise WorkflowError(409, "ALREADY_STARTED")
             if d["reminder_state"] == "SCHEDULED":
                 raise WorkflowError(409, "NOT_DUE")
-            if self.active_txn():
-                raise WorkflowError(409, "ANOTHER_DOSE_ACTIVE")
-            blocks = self._device_blocks()
-            if blocks:
-                status = 503 if blocks[0]["code"] == "DEVICE_DISCONNECTED" else 409
-                raise WorkflowError(status, blocks[0]["code"], blocks[0]["message"], reason_codes=[b["code"] for b in blocks])
             plan = self.store.plan_version(d["plan_version_id"])
-            if not plan or not self.store.person(plan["person_id"]):
-                raise WorkflowError(409, "NOT_ENROLLED")
+            self._start_preconditions(plan)
             group = self.store.q(
                 "SELECT d.* FROM doses d JOIN reminders r ON r.dose_id=d.dose_id WHERE d.due_at_utc=? AND d.demo=?"
-                " AND d.delivery_mode='DEVICE' AND d.workflow_state='NOT_STARTED' AND d.outcome IS NULL"
+                " AND d.delivery_mode='DEVICE' AND d.schedule='SCHEDULED' AND d.workflow_state='NOT_STARTED' AND d.outcome IS NULL"
                 " AND r.state NOT IN ('SCHEDULED','CLOSED') AND d.plan_version_id=?",
                 (d["due_at_utc"], d["demo"], d["plan_version_id"]),
             )
-            by_class: dict[str, int] = {}
-            by_channel: dict[str, int] = {}
-            for g in group:
-                by_class[g["class_id"]] = by_class.get(g["class_id"], 0) + g["quantity"]
-                by_channel[g["cartridge"]] = by_channel.get(g["cartridge"], 0) + g["quantity"]
-            if any(n > self.settings.max_tokens_per_channel or n < 1 for n in by_channel.values()):
-                raise WorkflowError(409, "QUANTITY_LIMIT")
-            txn_id = uuid.uuid4().hex[:12]
-            short = secrets.token_hex(3)
-            ids = [g["dose_id"] for g in group]
+            by_class, by_channel = self._tray_totals(group)
+            with self.store.tx() as conn:
+                return self._open_txn(conn, request_id, group, plan, d["demo"], by_class, by_channel, dose_id)
+        return await self._idempotent(request_id, "doses/start", fn)
+
+    async def request_as_needed(self, request_id: str, entry_key: str, plan_version_id: int) -> dict:
+        """One on-demand dose of an AS_NEEDED entry. DEVICE entries start the same guarded workflow
+        as a due dose (nothing is dispensed by this call); REMINDER_ONLY entries record an
+        unverified self report. Limits are checked here, under the engine lock, every time."""
+        async def fn():
+            occurrence_id = f"prn|{request_id}"
+            prev = self.store.q1("SELECT * FROM doses WHERE occurrence_id=?", (occurrence_id,))
+            if prev:  # the same request committed before its reply was saved: never a second dose
+                return self._as_needed_reply(prev)
+            demo = self.store.demo
+            plan = self.store.active_plan(demo)
+            if not plan or plan["plan_version_id"] != plan_version_id:
+                raise WorkflowError(409, "PLAN_VERSION_MISMATCH")
+            entry = next((e for e in plan["entries"] if e["entry_key"] == entry_key), None)
+            if not entry:
+                raise WorkflowError(409, "UNKNOWN_ENTRY")
+            if not is_as_needed(entry):
+                raise WorkflowError(409, "NOT_AS_NEEDED")
+            now_dt = self.clock.now()
+            tz = ZoneInfo(plan["timezone"])
+            limits = as_needed.evaluate(self.store, entry, demo, now_dt)
+            if not limits["available"]:
+                code = limits["blocked_reason"]
+                nxt = parse(limits["next_available_at"])
+                when = as_needed.when_local(nxt, tz, now_dt)
+                raise WorkflowError(409, code, message(code, when=when), next_available_at=limits["next_available_at"],
+                                    next_available_local=when, taken_last_24h=limits["taken_last_24h"],
+                                    last_taken_at=limits["last_taken_at"], min_interval_hours=entry["min_interval_hours"],
+                                    max_per_day=entry["max_per_day"])
+            dose = {
+                "dose_id": uuid.uuid4().hex[:12], "occurrence_id": occurrence_id, "slot_id": f"{entry_key}@PRN",
+                "local_date": now_dt.astimezone(tz).date().isoformat(), "local_time": now_dt.astimezone(tz).strftime("%H:%M"),
+                "entry_key": entry_key, "plan_version_id": plan["plan_version_id"], "label": entry["label"],
+                "strength_text": entry.get("strength_text"), "quantity": entry["quantity"], "class_id": entry.get("class_id"),
+                "cartridge": entry.get("cartridge"), "delivery_mode": entry["delivery_mode"], "due_at_utc": iso(now_dt),
+                "demo": demo, "schedule": "AS_NEEDED",
+            }
+            if entry["delivery_mode"] == "DEVICE":
+                self._start_preconditions(plan)
+                by_class, by_channel = self._tray_totals([dose])  # this entry alone; never combined
             now = self.store.now()
             with self.store.tx() as conn:
-                conn.execute(
-                    "INSERT INTO transactions (txn_id, short_id, request_id, dose_ids_json, expected_json, state, controller_session,"
-                    " demo, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (txn_id, short, request_id, dumps(ids), dumps({"by_class": by_class, "by_channel": by_channel,
-                                                                   "plan_version_id": d["plan_version_id"],
-                                                                   "person_id": plan["person_id"]}),
-                     "PERSON_CHECK", self.hw.session, d["demo"], now, now),
-                )
-                n = conn.execute(f"UPDATE doses SET workflow_state='PERSON_CHECK', txn_id=?, updated_at=? WHERE dose_id IN ({_qs(ids)})"
-                                 " AND workflow_state='NOT_STARTED'", (txn_id, now, *ids)).rowcount
-                if n != len(ids):
-                    raise WorkflowError(409, "ALREADY_STARTED")
-                self.store.event(conn, "DOSE_STARTED", dose_id=dose_id, txn_id=txn_id,
-                                 details={"doses": ids, "by_class": by_class, "by_channel": by_channel})
-            return {"txn_id": txn_id, "state": "PERSON_CHECK", "dose_ids": ids}
-        return await self._idempotent(request_id, "doses/start", fn)
+                cols = list(dose) + ["created_at", "updated_at"]
+                conn.execute(f"INSERT INTO doses ({','.join(cols)}) VALUES ({_qs(cols)})", (*dose.values(), now, now))
+                self.store.event(conn, "AS_NEEDED_REQUESTED", dose_id=dose["dose_id"], details={
+                    "entry_key": entry_key, "request_id": request_id, "delivery_mode": entry["delivery_mode"],
+                    "min_interval_hours": entry["min_interval_hours"], "max_per_day": entry["max_per_day"],
+                    "counted_last_24h_before": limits["taken_last_24h"]})
+                if entry["delivery_mode"] == "DEVICE":
+                    self._open_txn(conn, request_id, [dose], plan, demo, by_class, by_channel, dose["dose_id"])
+                else:
+                    self.reminders.record_self_report(conn, dose["dose_id"], None, as_needed=True)
+            return self._as_needed_reply(self.store.q1("SELECT * FROM doses WHERE dose_id=?", (dose["dose_id"],)))
+        return await self._idempotent(request_id, "doses/request", fn)
+
+    def _as_needed_reply(self, d: dict) -> dict:
+        device = d["delivery_mode"] == "DEVICE"
+        state = "SELF_REPORTED"
+        if device:
+            t = self.store.q1("SELECT state FROM transactions WHERE txn_id=?", (d["txn_id"],)) if d["txn_id"] else None
+            state = t["state"] if t else d["workflow_state"]
+        return {"dose_id": d["dose_id"], "occurrence_id": d["occurrence_id"], "entry_key": d["entry_key"],
+                "schedule": "AS_NEEDED", "delivery_mode": d["delivery_mode"], "plan_version_id": d["plan_version_id"],
+                "txn_id": d["txn_id"], "dose_ids": [d["dose_id"]], "state": state, "self_report": d["self_report"],
+                "requested_at": d["created_at"]}
 
     async def cancel(self, request_id: str, txn_id: str) -> dict:
         async def fn():
@@ -761,7 +848,7 @@ class WorkflowEngine:
                 obs[kind] = {"result": o["result"], "reason_code": o["reason_code"], "message": o["details"].get("message"),
                              "observed": o["details"].get("observed"), "simulated": bool(o["simulated"]),
                              "age_s": None if age is None else round(age, 1), "tray_revision": o["tray_revision"]}
-        doses = self.store.q(f"SELECT dose_id, label, strength_text, quantity, class_id, cartridge FROM doses WHERE dose_id IN ({_qs(_ids(t))})",
+        doses = self.store.q(f"SELECT dose_id, label, strength_text, quantity, class_id, cartridge, schedule FROM doses WHERE dose_id IN ({_qs(_ids(t))})",
                              _ids(t))
         blocks = json.loads(t["blocks_json"] or "[]")
         release_available = False

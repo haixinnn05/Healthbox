@@ -184,6 +184,8 @@ class CaptureManager:
         self.mode = settings.camera_mode
         self.laptop: LaptopCamera | None = None
         self.tray_cam: Esp32SnapshotCamera | None = None
+        self._preview_lock = threading.Lock()
+        self._previews: dict[str, tuple[str, bytes]] = {}
 
     @property
     def simulated(self) -> bool:
@@ -209,18 +211,47 @@ class CaptureManager:
             return self.laptop.latest()
         return None
 
-    def preview_jpeg(self, role: str) -> bytes | None:
+    def preview_frame(self, role: str) -> tuple[str, bytes] | None:
+        """Encode each source frame once, shared by snapshots and stream viewers.
+
+        Called off the event loop: JPEG work must not hold up status or STOP requests.
+        The cache contains only the newest preview, never a queue of old frames.
+        """
         import cv2
         src = self.tray_cam if (role == "tray" and self.tray_cam) else self.laptop
         f = src.latest() if src else None
-        if f is None:
+        if f is None or self.clock.monotonic() - f.capture_mono > 1.0:
             return None
-        img = f.image
-        h, w = img.shape[:2]
-        if w > 640:
-            img = cv2.resize(img, (640, int(h * 640 / w)))
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
-        return buf.tobytes() if ok else None
+        with self._preview_lock:
+            cached = self._previews.get(f.source_id)
+            if cached is not None and cached[0] == f.frame_id:
+                return cached
+            img = f.image
+            h, w = img.shape[:2]
+            if w > 640:
+                img = cv2.resize(img, (640, int(h * 640 / w)))
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 70])
+            if not ok:
+                return None
+            preview = (f.frame_id, buf.tobytes())
+            self._previews[f.source_id] = preview
+            return preview
+
+    def preview_jpeg(self, role: str) -> bytes | None:
+        preview = self.preview_frame(role)
+        return preview[1] if preview else None
+
+    async def preview_stream(self, role: str):
+        """At most 24 fps, dropping missed frames instead of buffering latency."""
+        last_id = None
+        while True:
+            preview = await asyncio.to_thread(self.preview_frame, role)
+            if preview is not None and preview[0] != last_id:
+                last_id, data = preview
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n"
+                       + f"Content-Length: {len(data)}\r\nX-Frame-Id: {last_id}\r\n\r\n".encode()
+                       + data + b"\r\n")
+            await asyncio.sleep(1 / 24)
 
     def status(self) -> dict:
         return {

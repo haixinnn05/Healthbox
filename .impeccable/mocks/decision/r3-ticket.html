@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>DoseGuard: Ticket Wallet</title>
+<link href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;600;800&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0}
+body{width:1440px;height:900px;overflow:hidden;background:#E4EEF9;color:#1A2F5A;font-family:"Atkinson Hyperlegible Next",system-ui,sans-serif}
+header{height:76px;display:flex;align-items:center;gap:36px;padding:0 56px;background:#1A2F5A;color:#fff}
+.brand{font-weight:800;font-size:24px;letter-spacing:.02em}
+nav{display:flex;gap:4px}nav a{font-size:19px;font-weight:600;padding:12px 20px;border-radius:6px;opacity:.8}
+nav a.on{opacity:1;background:rgba(255,255,255,.12)}
+.sp{flex:1}.stop{margin-left:36px;background:#C8322B;font-weight:800;font-size:19px;letter-spacing:.06em;padding:13px 28px;border-radius:6px}
+main{display:grid;grid-template-columns:1fr 400px;gap:56px;padding:44px 56px}
+h1{font-size:42px;font-weight:800;letter-spacing:-.01em}.sub{font-size:20px;margin:6px 0 26px;color:#3B4F7A}
+.ticket{display:grid;grid-template-columns:1fr 250px;background:#fff;border-radius:10px;box-shadow:0 6px 20px rgba(0,0,0,.08);overflow:hidden}
+.main{padding:0}.band{background:#1A2F5A;color:#fff;padding:18px 32px;display:flex;justify-content:space-between;font-size:18px;font-weight:800;letter-spacing:.08em}
+.body{padding:28px 32px}.body h2{font-size:38px;font-weight:800}
+.fields{display:grid;grid-template-columns:repeat(3,1fr);margin-top:22px;border-top:1px solid #C9D6EA}
+.f{padding:16px 0;border-right:1px solid #C9D6EA;padding-left:16px}.f:first-child{padding-left:0}.f:last-child{border-right:0}
+.f small{display:block;font-size:15px;font-weight:800;letter-spacing:.08em;color:#5B4B8A}
+.f b{font-size:26px;color:#5B4B8A}
+.stub{border-left:3px dashed #C9D6EA;padding:28px 24px;display:flex;flex-direction:column;justify-content:space-between;
+ background:radial-gradient(circle at 0 0,#E4EEF9 14px,transparent 15px),radial-gradient(circle at 0 100%,#E4EEF9 14px,transparent 15px),#fff}
+.stub small{font-size:15px;font-weight:800;letter-spacing:.08em}.stub b{font-size:44px}
+.go{display:block;text-align:center;font-size:22px;font-weight:800;background:#1A2F5A;color:#fff;padding:18px;border-radius:6px}
+.coupons{display:flex;gap:10px;margin-top:26px}
+.c{flex:1;height:64px;border-radius:6px;border:2px dashed #93A7C9;font-size:15px;font-weight:800;display:flex;align-items:center;justify-content:center;color:#3B4F7A}
+aside h3{font-size:22px;font-weight:800;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;padding:16px 18px;margin-bottom:10px;background:#fff;border-radius:8px;font-size:19px}
+.need{margin-top:24px;background:#fff;border-radius:8px;padding:22px;border-top:6px solid #1A2F5A}
+.need p{font-size:18px;margin-top:6px}.need .b{display:inline-block;margin-top:14px;font-size:19px;font-weight:800;padding:12px 20px;border:2px solid #1A2F5A;border-radius:6px}
+</style></head><body>
+<header><span class="brand">DOSEGUARD</span><nav><a class="on">Today</a><a>Ask</a><a>Setup</a></nav><span class="sp"></span><span>Aa Display</span><span class="stop">STOP</span></header>
+<main><section><h1>Good morning, Jackson</h1><p class="sub">Saturday, November 7. One dose is ready.</p>
+<div class="ticket"><div class="main"><div class="band"><span>DOSE FOR JACKSON</span><span>NOV 7</span></div>
+<div class="body"><h2>Morning tablets</h2><div class="fields"><div class="f"><small>TIME</small><b>8:00</b></div><div class="f"><small>BLUE</small><b>1</b></div><div class="f"><small>ORANGE</small><b>1</b></div></div></div></div>
+<div class="stub"><div><small>STATUS</small><br><b>Ready</b></div><span class="go">Take my dose</span></div></div>
+<div class="coupons"><span class="c">You</span><span class="c">Empty tray</span><span class="c">Dispense</span><span class="c">Count</span><span class="c">You again</span><span class="c">Open</span></div>
+</section><aside><h3>Rest of today</h3><div class="row"><span>1:00 PM</span><b>Vitamin</b></div><div class="row"><span>9:00 PM</span><b>Evening tablet</b></div>
+<div class="need"><h3>When you need it</h3><p>Headache relief. Ready now, 0 of 3 today.</p><span class="b">I need this</span></div></aside></main>
+</body></html>

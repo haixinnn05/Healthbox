@@ -39,6 +39,10 @@ HELP: list[dict] = [
     {"id": "H-reminder-only", "title": "Reminder-only entries", "keywords": "reminder only separate stored mark taken self report",
      "text": "Reminder-only entries are stored outside the dispenser. Mark taken records an unverified self report and never "
              "counts as a camera check."},
+    {"id": "H-as-needed", "title": "As-needed medicine", "keywords": "as needed prn headache pain when can take extra limit hours another",
+     "text": "As-needed medicine has no schedule. You ask for a dose when you need it. DoseGuard allows it only when enough hours "
+             "have passed since the last dose and the 24 hour maximum is not reached. A dispenser dose still runs every "
+             "verification step. The limits come from the confirmed plan; ask your clinician before changing them."},
     {"id": "H-label", "title": "Label scan", "keywords": "label scan photo extract gemini fields",
      "text": "A fictional label can be scanned to suggest fields. Every suggested field must be reviewed and the plan confirmed "
              "by a person before it is used."},
@@ -87,6 +91,13 @@ def build_facts(snap: dict, recent_events: list[dict]) -> list[dict]:
         extra = f", snoozed until {r['snoozed_until_local']}" if r.get("snoozed_until_local") else ""
         add(f"F-dose-{card['dose_id']}", f"{card['label']} x{card['quantity']} due {card['due_local']}: reminder {r.get('state', 'none').lower()}"
             f"{extra}; workflow {card['workflow_state'].lower().replace('_', ' ')}; {_mode(card)}.")
+    for p in snap.get("as_needed") or []:
+        limits = (f"at least {p['min_interval_hours']} hours apart, at most {p['max_per_day']} in 24 hours; "
+                  f"{p['taken_last_24h']} counted in the last 24 hours")
+        last = f" Last dose {p['last_taken_local']}." if p.get("last_taken_local") else " No dose recorded yet."
+        now = ("within its limits now" + (", and the dispenser still runs every verification step" if p["delivery_mode"] == "DEVICE" else "")
+               if p["available"] else "not available now. " + (p.get("blocked_message") or "").rstrip("."))
+        add(f"F-prn-{p['entry_key']}", f"As-needed {p['label']} x{p['quantity']} ({_mode(p)}): {now}. Limits: {limits}.{last}")
     wf = (snap.get("workflow") or {}).get("txn")
     if wf:
         add("F-stage", f"Verification stage: {wf['stage']}.")
@@ -131,6 +142,9 @@ def local_answer(question: str, snap: dict, facts: list[dict]) -> dict:
     if any(w in q for w in ("unlock", "dispense now", "bypass", "override", "change my dose", "skip the check", "api key", "key")):
         return _ans("I can only explain. I can't dispense, unlock, change a plan or reveal settings. Use the normal controls.",
                     ["F-device"], None, "out_of_scope")
+    prn = _as_needed_match(q, snap)
+    if prn and f"F-prn-{prn}" in ids:
+        return _ans(ids[f"F-prn-{prn}"]["text"], [f"F-prn-{prn}"], "today")
     if any(w in q for w in ("block", "fail", "why can't", "why cant", "locked", "count")):
         auth = authoritative_explanation(snap)
         if auth:
@@ -149,6 +163,20 @@ def local_answer(question: str, snap: dict, facts: list[dict]) -> dict:
                         [due[0]["id"]], "today")
         return _ans("No reminder is active right now.", ["F-next"], "today")
     return _ans(ids["F-next"]["text"], ["F-next"], "today")
+
+
+def _as_needed_match(q: str, snap: dict) -> str | None:
+    """The as-needed entry a question is about: named by a word of its label, or asked about
+    generically ("as needed", "take another") when there is only one."""
+    items = snap.get("as_needed") or []
+    words = {w for w in re.findall(r"[a-z]+", q) if len(w) >= 4}
+    for p in items:
+        label = {w for w in re.findall(r"[a-z]+", p["label"].lower()) if len(w) >= 4} - {"fictional", "demo"}
+        if words & label:
+            return p["entry_key"]
+    if len(items) == 1 and any(w in q for w in ("as needed", "as-needed", "prn", "take another", "another dose")):
+        return items[0]["entry_key"]
+    return None
 
 
 def _ans(text: str, fact_ids: list[str], page: str | None, scope: str = "in_scope") -> dict:

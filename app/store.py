@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS doses (
   review_reason TEXT,
   demo INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  schedule TEXT NOT NULL DEFAULT 'SCHEDULED'
 );
 CREATE INDEX IF NOT EXISTS doses_due ON doses (demo, due_at_utc);
 
@@ -208,6 +209,16 @@ DEFAULT_CLASSES = [
 ]
 
 
+def _entries(entries_json: str) -> list[dict]:
+    """Plan entries saved before as-needed support have no schedule fields: they are SCHEDULED."""
+    out = json.loads(entries_json)
+    for e in out:
+        e.setdefault("schedule", "SCHEDULED")
+        e.setdefault("min_interval_hours", None)
+        e.setdefault("max_per_day", None)
+    return out
+
+
 def dumps(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"), sort_keys=True, default=str)
 
@@ -226,7 +237,16 @@ class Store:
         self.version = 0
         with self.lock:
             self.conn.executescript(SCHEMA)
+            self._migrate()
         self._seed()
+
+    def _migrate(self) -> None:
+        """Additive changes for databases created by older versions. Each step is safe to rerun."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(doses)").fetchall()}
+        if "schedule" not in cols:
+            # Every dose before as-needed support came from a recurring schedule.
+            self.conn.execute("ALTER TABLE doses ADD COLUMN schedule TEXT NOT NULL DEFAULT 'SCHEDULED'")
+        self.conn.execute("CREATE INDEX IF NOT EXISTS doses_as_needed ON doses (schedule, entry_key, demo)")
 
     # -- primitives -------------------------------------------------------
     @contextmanager
@@ -324,13 +344,13 @@ class Store:
         demo = self.demo if demo is None else demo
         row = self.q1("SELECT * FROM plan_versions WHERE active=1 AND demo=? ORDER BY plan_version_id DESC LIMIT 1", (demo,))
         if row:
-            row["entries"] = json.loads(row.pop("entries_json"))
+            row["entries"] = _entries(row.pop("entries_json"))
         return row
 
     def plan_version(self, plan_version_id: int) -> dict | None:
         row = self.q1("SELECT * FROM plan_versions WHERE plan_version_id=?", (plan_version_id,))
         if row:
-            row["entries"] = json.loads(row.pop("entries_json"))
+            row["entries"] = _entries(row.pop("entries_json"))
         return row
 
     def person(self, person_id: str | None) -> dict | None:
