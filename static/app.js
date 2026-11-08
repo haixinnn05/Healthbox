@@ -498,7 +498,15 @@ function rerender(force = false) {
   if (S.lastUnlocked !== undefined && S.lastUnlocked !== unlocked && DOOR_VIEWS.includes(S.view)) { S.lastUnlocked = unlocked; route(); return; }
   S.lastUnlocked = unlocked;
   const publicNote = document.getElementById("public-note");
-  if (publicNote) { publicNote.hidden = !s.public_demo; publicNote.textContent = s.public_demo ? t("public.note", { n: s.public_demo }) : ""; }
+  if (publicNote) {
+    publicNote.hidden = !s.public_demo;
+    const noteKey = s.public_demo ? `${PREFS.lang}:${s.public_demo}` : "";
+    if (publicNote.dataset.key !== noteKey) {  // rebuilt only when it changes, so a click isn't lost to the status refresh
+      publicNote.dataset.key = noteKey;
+      publicNote.replaceChildren(...(s.public_demo ? [h("span", {}, t("public.note", { n: s.public_demo })),
+        h("button", { class: "btn btn-quiet", type: "button", onclick: startOverDemo }, t("public.start_over"))] : []));
+    }
+  }
   if (DOOR_VIEWS.includes(S.view) && setupLocked()) {
     // Signed out: Setup, medicines and history show the sign-in panel only (their data needs sign-in).
     if (S.keys[S.view] !== "signed-out") { S.keys[S.view] = "signed-out"; doorMain(S.view); }
@@ -819,6 +827,10 @@ const today = {
     groups.forEach((g, i) => lead.append(duePanel(g, s, !!tx || i > 0)));
     const stock = stockNotes(s);
     if (stock) lead.append(stock);
+    if (s.public_demo && !active.length && !tx && !taking) {
+      const tryPanel = tryDosePanel(s);
+      if (tryPanel) lead.append(tryPanel);
+    }
     if (s.plan && !active.length && !tx && !taking && !(s.followups || []).length) {
       const nd = s.next_dose;
       lead.append(calmPanel(t("today.all_set"), nd ? t("today.next", { name: nd.label, time: whenText(nd) }) : t("today.all_set_sub")));
@@ -847,6 +859,21 @@ function renderSignedOutToday(s) {
   // One sign-in panel kept across refreshes, so a half-typed password is not lost when the page updates.
   if (!S.signin) S.signin = unlockPanel(false);
   setMain(h("div", { class: "today-grid" }, lead, h("div", {}, S.signin)));
+}
+
+async function startOverDemo() {
+  await api("/api/demo/reset", {}, { noRetry: true }).catch(() => null);
+  setOnboarding(false);
+  location.reload();
+}
+
+/* Public demo: bring a dose due right away, since a confirmed time could be hours off. */
+function tryDosePanel(s) {
+  const entry = s.plan && s.plan.recipient && (s.plan.entries || []).find((e) => e.delivery_mode === "DEVICE" && e.schedule !== "AS_NEEDED");
+  if (!entry) return null;
+  return calmPanel(t("public.try_title"), t("public.try_body"),
+    h("button", { class: "btn btn-primary btn-big", disabled: !!S.busy,
+      onclick: () => act("demo", () => api("/api/demo/trigger", { entry_keys: [entry.entry_key] })).then((x) => x && toast(t("demo.started"))) }, t("public.try_btn")));
 }
 
 function calmPanel(title, body, action) {
@@ -1044,7 +1071,10 @@ function stepPanel(s, tx) {
   const wfBusy = s.workflow.busy || S.busy;
   const blocks = tx.blocks || [];
   const key = stepKey(tx);
-  const say = t(`stage.${key}.instr`);
+  // The count only stays valid briefly. Once it is old, unlocking is not possible: say so and offer the recount.
+  const recountDue = tx.state === "RECIPIENT_RECHECK" && !tx.release_available
+    && blocks.some((b) => ["INSPECTION_EXPIRED", "INSPECTION_MISSING", "TRAY_REVISION_CHANGED"].includes(b.code));
+  const say = recountDue ? t("verify.recount_instr") : t(`stage.${key}.instr`);
   const panel = h("section", { class: "step-panel", "aria-labelledby": "stage-say" });
   panel.append(h("ul", { class: "step-for", "aria-label": t("rx.your_dose") }, tx.doses.map((d) => {
     const c = s.today.find((x) => x.dose_id === d.dose_id) || {};
@@ -1070,10 +1100,9 @@ function stepPanel(s, tx) {
       s.workflow.busy === "HAND_CHECK" ? t("verify.checking_hand")
         : tx.pose === "FACE" && tx.state !== "COLLECTION_CHECK" ? t("verify.checking_face") : t("verify.checking_tray")));
   } else if (tx.state === "RECIPIENT_RECHECK") {
-    // The count only stays valid briefly. Asking to unlock on an old count sends the dose back to be counted again.
-    const recount = !tx.release_available && !wfBusy && (tx.blocks || []).some((b) => ["INSPECTION_EXPIRED", "INSPECTION_MISSING", "TRAY_REVISION_CHANGED"].includes(b.code));
-    if (recount) {
-      row.append(h("button", { class: "btn btn-primary btn-big ringed", onclick: () => { S.autoFailed = null; return act("recount", () => api("/api/doses/release", { txn_id: tx.txn_id }, { noRetry: true }).catch(() => null)); } }, icon("camera"), t("stage.DOSE_CHECK.btn")));
+    // Asking to unlock on an old count sends the dose back to be counted again.
+    if (recountDue) {
+      row.append(h("button", { class: "btn btn-primary btn-big ringed", onclick: () => { S.autoFailed = null; return act("recount", () => api("/api/doses/release", { txn_id: tx.txn_id }, { noRetry: true }).catch(() => null)); } }, icon("camera"), t("verify.recount_btn")));
     } else {
       row.append(h("button", { class: "btn btn-primary btn-big ringed", disabled: !tx.release_available, onclick: () => release(tx) }, icon("lock-key-open"), t(`stage.${tx.state}.btn`)));
       if (!tx.release_available) zone.append(h("p", { class: "muted" }, t("verify.unlock_unavailable")));
@@ -1339,10 +1368,13 @@ function takingPanel(s) {
   const pending = doses.filter((d) => !d.self_report);
   if (!pending.length) return null;
   const say = w.action_observed ? t("taking.seen") : t("taking.body");
+  // The laptop camera is already being watched here; show it so the person can see they are in view.
+  if (!S.takingImg) S.takingImg = h("img", { alt: t("camera.preview") });
   return h("section", { class: "due-panel", "aria-label": t("taking.title") },
     h("h2", { class: "due-name" }, t("taking.title")),
     h("p", { class: "due-sub" }, say),
     h("ul", { class: "due-items" }, doses.map((d) => h("li", {}, swatch(d.class_color), d.label, h("span", { class: "qty" }, `×\u00a0${d.quantity}`)))),
+    h("div", { style: "max-width:360px;margin:.75rem 0" }, h("div", { class: "camera" }, S.takingImg)),
     h("dl", { class: "evidence" }, h("dt", {}, t("watch.taking")), h("dd", {}, takingRow(w))),
     h("p", { class: "muted small", style: "margin:.75rem 0 1.25rem" }, t("watch.never_swallow")),
     h("div", { class: "due-actions" },
@@ -2651,6 +2683,7 @@ function cameraLoop() {
   // the checks and the saved proof photos use the real, unmirrored picture.
   cameraStream(S.cameraImg, wantPreview ? role : null, !!wantPreview);
   cameraStream(S.labelImg, live && S.view === "setup" && S.capturingFor != null ? "face" : null);
+  cameraStream(S.takingImg, live ? "face" : null, true);  // streams only while the taking panel is on screen
   setTimeout(cameraLoop, 250);
 }
 
@@ -2658,11 +2691,13 @@ document.addEventListener("visibilitychange", () => {
   if (document.hidden) {
     cameraStream(S.cameraImg, null);
     cameraStream(S.labelImg, null);
+    cameraStream(S.takingImg, null);
   }
 });
 window.addEventListener("pagehide", () => {
   cameraStream(S.cameraImg, null);
   cameraStream(S.labelImg, null);
+  cameraStream(S.takingImg, null);
 });
 
 /* ---------------------------------------------------------------- wiring */

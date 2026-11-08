@@ -34,19 +34,42 @@ def test_env_forces_simulation(monkeypatch):
     assert s.validate() == []
 
 
-def test_visitor_lands_on_a_ready_demo(harness):
+def test_visitor_starts_at_sign_up_on_an_armed_demo(harness):
     h = demo(harness)
     st = h.wait(lambda s: s["workflow"]["armed"], msg="armed")
-    assert st["public_demo"] == 30 and st["demo_mode"] is True
-    assert st["account"]["exists"] and st["account"]["unlocked"] and not st["signed_out"]
+    assert st["public_demo"] == 30 and st["demo_mode"] is True and st["account"]["exists"] is False
+    h.post("/api/account/create", {"request_id": rid(), "first_name": "Judge", "last_name": "One", "password": "correct-horse-1"})
+    assert h.status()["account"]["unlocked"] is True
+    h.post("/api/enroll", {"request_id": rid(), "label": "x", "consent": True})
+    assert h.status()["plan"]["recipient"]
 
 
-def test_nobody_can_take_over_the_guest_or_leave_demo_mode(harness):
+def test_nobody_can_lock_out_the_others_or_leave_demo_mode(harness):
     h = demo(harness)
-    for path in ("create", "unlock", "lock", "password", "handover"):
+    for path in ("unlock", "lock", "password", "handover"):
         assert h.post(f"/api/account/{path}", {"request_id": rid()}, expect=403)["reason_codes"] == ["PUBLIC_DEMO"]
     assert h.post("/api/demo/mode", {"request_id": rid(), "enabled": False}, expect=403)["reason_codes"] == ["PUBLIC_DEMO"]
-    assert h.status()["account"]["unlocked"] is True
+
+
+def test_start_over_goes_back_to_sign_up_from_any_state(harness):
+    h = demo(harness)
+    h.wait(lambda s: s["workflow"]["armed"], msg="armed")
+    h.post("/api/account/create", {"request_id": rid(), "first_name": "Judge", "last_name": "One", "password": "correct-horse-1"})
+    h.post("/api/enroll", {"request_id": rid(), "label": "x", "consent": True})
+    h.post("/api/device/stop", {"request_id": rid()})
+    h.post("/api/demo/reset", {"request_id": rid()})
+    st = h.wait(lambda s: s["workflow"]["armed"], msg="armed again")
+    assert st["account"]["exists"] is False and st["plan"]["recipient"] is None and st["demo_mode"] is True
+
+
+def test_a_dose_comes_due_quickly(harness):
+    h = demo(harness)
+    h.wait(lambda s: s["workflow"]["armed"], msg="armed")
+    h.post("/api/account/create", {"request_id": rid(), "first_name": "Judge", "last_name": "One", "password": "correct-horse-1"})
+    h.post("/api/enroll", {"request_id": rid(), "label": "x", "consent": True})
+    h.post("/api/demo/trigger", {"request_id": rid(), "entry_keys": ["demoA"]})
+    h.advance(6)
+    h.wait(lambda s: any(c["reminder"]["state"] == "DUE" for c in s["today"]), msg="due")
 
 
 def test_public_host_and_origin_only(harness):

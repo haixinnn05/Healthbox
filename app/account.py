@@ -151,10 +151,15 @@ class AccountService:
         """This request came over the public link and its browser is not signed in."""
         return remote_scope.get() is not None and not self._signed_in
 
-    def keep_signed_in(self) -> None:
-        """Public demo only: the built-in guest is always signed in."""
-        self._signed_in = True
+    def forget(self) -> None:
+        """Public demo only: back to no account, so the next visitor starts at sign-up."""
+        with self.store.tx() as conn:
+            conn.execute("DELETE FROM account WHERE account_id=1")
+        self._local_signed_in = False
+        self._sessions.clear()
         self._unlocked_until = None
+        self._failures.clear()
+        self._locked_out_until = None
 
     # -- reading ----------------------------------------------------------------
     def _name(self) -> str | None:

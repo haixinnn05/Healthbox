@@ -250,7 +250,7 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         demo_task = None
         if settings.public_demo:
             await _public_demo_prepare(svc)
-            demo_task = asyncio.create_task(_public_demo_loop(svc))
+            demo_task = asyncio.create_task(_public_demo_loop(app, svc))
         store.log("APP_STARTED", details={"hardware": settings.hardware_mode, "camera": settings.camera_mode,
                                           "ai": settings.genai_backend})
         try:
@@ -314,6 +314,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
             if not secrets.compare_digest(request.headers.get("x-doseguard-token", ""), svc.token):
                 return JSONResponse({"result": "rejected", "reason_codes": ["BAD_TOKEN"],
                                      "message": "Missing or wrong session token. Reload the page."}, 403)
+            if settings.public_demo:
+                request.app.state.last_post = time.monotonic()
             if settings.public_demo and path in PUBLIC_DEMO_BLOCKED:
                 return harden(JSONResponse({"request_id": None, "state_version": svc.store.version, "result": "rejected",
                                             "reason_codes": ["PUBLIC_DEMO"], "message": message("PUBLIC_DEMO")}, 403))
@@ -861,11 +863,15 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     @app.post("/api/demo/trigger")
     async def demo_trigger(request: Request, body: DemoTrigger):
         svc = S(request)
-        return ok(request, body.request_id, svc.reminders.trigger_demo(body.request_id, body.entry_keys, 30))
+        delay = 5 if svc.settings.public_demo else 30  # judges shouldn't have to wait
+        return ok(request, body.request_id, svc.reminders.trigger_demo(body.request_id, body.entry_keys, delay))
 
     @app.post("/api/demo/reset")
     async def demo_reset(request: Request, body: Cmd):
         svc = S(request)
+        if svc.settings.public_demo:
+            await _public_demo_refresh(svc)  # Start over: back to sign-up, whatever state it was left in
+            return ok(request, body.request_id, {"reset": True})
         require_idle(svc)
         if not svc.store.demo:
             raise WorkflowError(409, "DEMO_MISMATCH", "Demo reset is available only in demo mode.")
@@ -1067,11 +1073,13 @@ def _wipe_demo(svc: Services) -> None:
         svc.store.event(conn, "DEMO_RESET", demo=1)
     if svc.settings.public_demo:
         shutil.rmtree(svc.settings.data_dir / "labels", ignore_errors=True)
+        shutil.rmtree(svc.settings.data_dir / "embeddings", ignore_errors=True)
     _create_demo_plan(svc)
 
 
-# Accounts and leaving demo mode are closed in the public demo: one visitor must not be able to lock out the rest.
-PUBLIC_DEMO_BLOCKED = {"/api/account/create", "/api/account/unlock", "/api/account/lock", "/api/account/password",
+# Visitors can make an account, but signing out, passwords and leaving demo mode are closed: one visitor
+# must not be able to lock out the rest. Start over (demo reset) is always open to everyone.
+PUBLIC_DEMO_BLOCKED = {"/api/account/unlock", "/api/account/lock", "/api/account/password",
                        "/api/account/handover", "/api/demo/mode"}
 
 
@@ -1088,23 +1096,18 @@ async def _public_demo_arm(svc: Services) -> None:
     log.warning("public demo: the simulated dispenser did not become ready")
 
 
-async def _public_demo_prepare(svc: Services) -> None:
-    """Set up the built-in guest, so no visitor sees the welcome form or can claim the box. Nobody knows
-    the guest's password: it is random and never stored outside its hash."""
-    if not svc.account.brief()["exists"]:
-        await svc.account.create(uuid.uuid4().hex, "", secrets.token_urlsafe(24), "Guest", "Demo")
-    svc.account.keep_signed_in()
-    if not svc.store.current_person():
-        person_id = uuid.uuid4().hex[:10]
-        ref, err = await svc.vision.enroll(person_id)
-        if err:
-            raise RuntimeError(f"public demo could not set up the simulated face: {err}")
-        now = svc.store.now()
-        with svc.store.tx() as conn:
-            conn.execute("INSERT INTO persons (person_id, label, consent_at, embedding_ref, simulated, created_at) VALUES (?,?,?,?,?,?)",
-                         (person_id, "Guest Demo", now, ref, 1, now))
+def _public_demo_clear_people(svc: Services) -> None:
+    """No account and no face: the next visitor starts at sign-up."""
+    now = svc.store.now()
     with svc.store.tx() as conn:
+        conn.execute("UPDATE persons SET archived_at=?, embedding_ref=NULL WHERE archived_at IS NULL", (now,))
         svc.store.meta_set(conn, "demo_mode", "1")
+    svc.account.forget()
+
+
+async def _public_demo_prepare(svc: Services) -> None:
+    """A fresh demo: the first visitor signs up, adds a (simulated) face and medicines, then takes a dose."""
+    _public_demo_clear_people(svc)
     _wipe_demo(svc)
     await _public_demo_arm(svc)
 
@@ -1132,25 +1135,23 @@ async def _public_demo_refresh(svc: Services) -> None:
     hw.sim("close_door")
     svc.vision.stop_watch()
     svc.vision.set_sim("recipient", "auto", "taken", "shown")
+    _public_demo_clear_people(svc)
     _wipe_demo(svc)
     await _public_demo_arm(svc)
 
 
-async def _public_demo_loop(svc: Services) -> None:
+async def _public_demo_loop(app: FastAPI, svc: Services) -> None:
+    """Start fresh once nobody has used the demo for a while, so nobody's visit is cut off."""
     period = svc.settings.demo_reset_minutes * 60
-    last = time.monotonic()
     while True:
         await asyncio.sleep(min(60, period))
-        if time.monotonic() - last < period:
+        idle = time.monotonic() - getattr(app.state, "last_post", time.monotonic())
+        if idle < period or not (svc.account.brief()["exists"] or svc.engine.active_txn()):
             continue
-        txn = svc.engine.active_txn()
-        if txn and svc.store.clock.now() - parse(txn["created_at"]) < timedelta(minutes=10):
-            continue  # someone is in the middle of a dose: try again in a minute
         try:
             await _public_demo_refresh(svc)
         except Exception:
             log.exception("public demo reset failed")
-        last = time.monotonic()
 
 
 def _create_demo_plan(svc: Services) -> None:
