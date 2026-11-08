@@ -60,7 +60,7 @@ test("verification switches to tray, while setup and label capture always use fa
   S.view = "verify";
   cameraLoop();
   assert.equal(S.cameraImg.url, "/api/camera/stream?role=tray");
-  assert.equal(S.cameraImg.classList.contains("camera-mirrored"), false);
+  assert.equal(S.cameraImg.classList.contains("camera-mirrored"), true);
   S.view = "setup";
   S.capturingFor = 0;
   cameraLoop();
@@ -70,7 +70,7 @@ test("verification switches to tray, while setup and label capture always use fa
   assert.equal(S.labelImg.classList.contains("camera-mirrored"), false);
 });
 
-test("single-camera tray views stay unmirrored and face views mirror without restarting the stream", () => {
+test("tray and face views both mirror without restarting the stream", () => {
   const { S, cameraLoop } = fixture();
   S.status.camera.mode = "single_laptop";
   S.view = "verify";
@@ -79,6 +79,6 @@ test("single-camera tray views stay unmirrored and face views mirror without res
   assert.equal(S.cameraImg.classList.contains("camera-mirrored"), true);
   S.status.workflow.txn.pose = "TRAY";
   cameraLoop();
-  assert.equal(S.cameraImg.classList.contains("camera-mirrored"), false);
+  assert.equal(S.cameraImg.classList.contains("camera-mirrored"), true);
   assert.equal(S.cameraImg.assignments, 1);
 });

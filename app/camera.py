@@ -7,8 +7,10 @@ import asyncio
 import logging
 import threading
 import uuid
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import datetime
+from urllib.parse import urlsplit
 
 from .config import Settings
 from .timeutil import Clock
@@ -177,6 +179,155 @@ class Esp32SnapshotCamera:
                 "age_ms": None if f is None else round((self.clock.monotonic() - f.capture_mono) * 1000)}
 
 
+def stream_url_for(snapshot_url: str) -> str:
+    """The firmware serves preview video on port 81 of the same host as /snapshot."""
+    parts = urlsplit(snapshot_url)
+    return f"{parts.scheme}://{parts.hostname}:81/stream"
+
+
+class MjpegParser:
+    """Splits the bytes of a multipart JPEG stream into (headers, jpeg) parts."""
+
+    MAX_BUFFER = 2_000_000
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+
+    def feed(self, data: bytes) -> list[tuple[dict[str, str], bytes]]:
+        self._buf += data
+        parts: list[tuple[dict[str, str], bytes]] = []
+        while True:
+            start = self._buf.find(b"--frame")
+            end = self._buf.find(b"\r\n\r\n", start) if start >= 0 else -1
+            if end < 0:
+                break
+            headers = {}
+            for line in bytes(self._buf[start:end]).split(b"\r\n")[1:]:
+                name, _, value = line.decode("latin-1").partition(":")
+                headers[name.strip().lower()] = value.strip()
+            try:
+                length = int(headers.get("content-length", ""))
+            except ValueError:
+                del self._buf[:end + 4]  # malformed part: resynchronise on the next boundary
+                continue
+            body = end + 4
+            if len(self._buf) < body + length:
+                break
+            parts.append((headers, bytes(self._buf[body:body + length])))
+            del self._buf[:body + length]
+        if len(self._buf) > self.MAX_BUFFER:
+            self._buf.clear()
+        return parts
+
+
+class Esp32StreamReader:
+    """The tray camera's video feed, for the on-screen preview and its overlay only.
+
+    One connection is shared by all viewers and it stays open only while someone is watching.
+    Verification never reads from here: it keeps using Esp32SnapshotCamera's provably fresh frames.
+    """
+
+    SOURCE_ID = "esp32cam-stream"
+    IDLE_GRACE_S = 3.0
+    FRESH_S = 1.0
+
+    def __init__(self, url: str, clock: Clock):
+        self.url = url
+        self.clock = clock
+        self.error: str | None = None
+        self.viewers = 0
+        self._idle_until = 0.0
+        self._task: asyncio.Task | None = None
+        self._latest: tuple[str, bytes, float, str, int] | None = None
+        self._new_frame = asyncio.Event()
+        self._decode_lock = threading.Lock()
+        self._decoded: Frame | None = None
+
+    def add_viewer(self) -> None:
+        self.viewers += 1
+        if self._task is None or self._task.done():
+            self._task = asyncio.create_task(self._run(), name="tray-preview-stream")
+
+    def remove_viewer(self) -> None:
+        self.viewers = max(0, self.viewers - 1)
+        if not self.viewers:
+            self._idle_until = self.clock.monotonic() + self.IDLE_GRACE_S
+
+    def _wanted(self) -> bool:
+        return self.viewers > 0 or self.clock.monotonic() < self._idle_until
+
+    async def _run(self) -> None:
+        import httpx
+        timeout = httpx.Timeout(connect=2.0, read=3.0, write=2.0, pool=2.0)
+        while self._wanted():
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client, client.stream("GET", self.url) as resp:
+                    if resp.status_code != 200:
+                        self.error = f"Tray preview stream returned HTTP {resp.status_code}."
+                    else:
+                        parser = MjpegParser()
+                        async for chunk in resp.aiter_raw():
+                            for headers, jpeg in parser.feed(chunk):
+                                self._publish(headers, jpeg)
+                            if not self._wanted():
+                                return
+            except Exception as exc:
+                self.error = f"Tray preview stream unavailable: {type(exc).__name__}"
+            await asyncio.sleep(0.5)
+
+    def _publish(self, headers: dict[str, str], jpeg: bytes) -> None:
+        try:
+            seq, age_ms = int(headers.get("x-frame-seq", "")), int(headers.get("x-capture-age-ms", ""))
+        except ValueError:
+            self.error = "Tray preview frame lacks its headers."
+            return
+        boot = headers.get("x-boot-id", "")
+        frame_id = f"{self.SOURCE_ID}:{boot[:6]}:{seq}"
+        self.error = None
+        self._latest = (frame_id, jpeg, self.clock.monotonic() - age_ms / 1000.0, boot, seq)
+        waiting, self._new_frame = self._new_frame, asyncio.Event()
+        waiting.set()
+
+    async def wait_newer(self, last_id: str | None, timeout: float) -> tuple[str, bytes] | None:
+        """The newest frame other than `last_id`; missed frames are dropped, never queued."""
+        if self._latest is None or self._latest[0] == last_id:
+            try:
+                await asyncio.wait_for(self._new_frame.wait(), timeout)
+            except asyncio.TimeoutError:
+                return None
+        latest = self._latest
+        return None if latest is None or latest[0] == last_id else (latest[0], latest[1])
+
+    def latest_frame(self) -> Frame | None:
+        """The newest video frame decoded for the overlay, or None if the feed is not fresh."""
+        import cv2
+        import numpy as np
+        latest = self._latest
+        if latest is None or self.clock.monotonic() - latest[2] > self.FRESH_S:
+            return None
+        frame_id, jpeg, capture_mono, boot, seq = latest
+        with self._decode_lock:
+            if self._decoded is not None and self._decoded.frame_id == frame_id:
+                return self._decoded
+            img = cv2.imdecode(np.frombuffer(jpeg, dtype=np.uint8), cv2.IMREAD_COLOR)
+            if img is None:
+                return None
+            self._decoded = Frame(img, seq, self.SOURCE_ID, boot, "tray", capture_mono, self.clock.now(),
+                                  meta={"preview_only": True})
+            return self._decoded
+
+    async def stop(self) -> None:
+        if self._task:
+            self._task.cancel()
+            self._task = None
+
+
+def _mjpeg_part(frame_id: str, data: bytes) -> bytes:
+    return (b"--frame\r\nContent-Type: image/jpeg\r\n"
+            + f"Content-Length: {len(data)}\r\nX-Frame-Id: {frame_id}\r\n\r\n".encode()
+            + data + b"\r\n")
+
+
 class CaptureManager:
     def __init__(self, settings: Settings, clock: Clock):
         self.settings = settings
@@ -184,6 +335,7 @@ class CaptureManager:
         self.mode = settings.camera_mode
         self.laptop: LaptopCamera | None = None
         self.tray_cam: Esp32SnapshotCamera | None = None
+        self.tray_stream: Esp32StreamReader | None = None
         self._preview_lock = threading.Lock()
         self._previews: dict[str, tuple[str, bytes]] = {}
 
@@ -198,10 +350,13 @@ class CaptureManager:
             self.laptop.start()
         if self.mode == "dual_camera":
             self.tray_cam = Esp32SnapshotCamera(self.settings.tray_camera_url, self.clock)
+            self.tray_stream = Esp32StreamReader(stream_url_for(self.settings.tray_camera_url), self.clock)
 
     async def stop(self) -> None:
         if self.laptop:
             self.laptop.stop()
+        if self.tray_stream:
+            await self.tray_stream.stop()
 
     async def frame(self, role: str) -> Frame | None:
         """role: face or tray. In single_laptop mode both use the laptop camera (guided poses)."""
@@ -210,6 +365,15 @@ class CaptureManager:
         if self.laptop is not None:
             return self.laptop.latest()
         return None
+
+    async def live_frame(self, role: str) -> Frame | None:
+        """A frame for the on-screen overlay only. Guarded checks must use frame(), whose tray frames
+        are provably fresh. Using the video here also keeps the overlay from competing with them."""
+        if role == "tray" and self.tray_stream is not None:
+            f = await asyncio.to_thread(self.tray_stream.latest_frame)
+            if f is not None:
+                return f
+        return await self.frame(role)
 
     def preview_frame(self, role: str) -> tuple[str, bytes] | None:
         """Encode each source frame once, shared by snapshots and stream viewers.
@@ -243,15 +407,36 @@ class CaptureManager:
 
     async def preview_stream(self, role: str):
         """At most 24 fps, dropping missed frames instead of buffering latency."""
+        if role == "tray" and self.tray_stream is not None:
+            # aclosing: when the viewer leaves, the feed's viewer count must drop now, not at garbage collection.
+            async with aclosing(self._tray_preview_stream(self.tray_stream)) as parts:
+                async for part in parts:
+                    yield part
+            return
         last_id = None
         while True:
             preview = await asyncio.to_thread(self.preview_frame, role)
             if preview is not None and preview[0] != last_id:
                 last_id, data = preview
-                yield (b"--frame\r\nContent-Type: image/jpeg\r\n"
-                       + f"Content-Length: {len(data)}\r\nX-Frame-Id: {last_id}\r\n\r\n".encode()
-                       + data + b"\r\n")
+                yield _mjpeg_part(last_id, data)
             await asyncio.sleep(1 / 24)
+
+    async def _tray_preview_stream(self, reader: Esp32StreamReader):
+        """The camera's own video, passed through without re-encoding. If the feed is missing (older
+        firmware, WiFi trouble) it shows the latest verification snapshot instead."""
+        reader.add_viewer()
+        last_id = None
+        try:
+            while True:
+                newest = await reader.wait_newer(last_id, 0.25)
+                if newest is None:
+                    newest = await asyncio.to_thread(self.preview_frame, "tray")
+                    if newest is None or newest[0] == last_id:
+                        continue
+                last_id = newest[0]
+                yield _mjpeg_part(newest[0], newest[1])
+        finally:
+            reader.remove_viewer()
 
     def status(self) -> dict:
         return {

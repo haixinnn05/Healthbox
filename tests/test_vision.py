@@ -98,6 +98,8 @@ class StubCamera:
         self.seq += 1
         return Frame(self.image, self.seq, "stub", "sess", role, self.clock.monotonic(), self.clock.now())
 
+    live_frame = frame
+
 
 class StubHardware:
     fields = {"rev": 7}

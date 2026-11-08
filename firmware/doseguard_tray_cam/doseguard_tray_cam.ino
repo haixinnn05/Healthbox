@@ -11,6 +11,9 @@
     Receiving a JPEG now does not prove it was captured now, so this firmware never serves a
     frame that was already buffered when the request came in.
 
+    GET :81/stream  ->  multipart/x-mixed-replace video for the on-screen preview only. Verification
+      never uses it, and a /snapshot in progress takes priority over it for fresh frames.
+
   The camera supplies pictures only. It has no link to the motors or the latch. It sits inside the box
   above the tray, so it keeps the board's white LED on, dimly and steadily (LIGHT_DUTY).
 
@@ -23,6 +26,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <ESPmDNS.h>
+#include <atomic>
 #include "esp_camera.h"
 #include "esp_http_server.h"
 #include "esp_timer.h"
@@ -38,11 +42,12 @@ const char* HOSTNAME = "doseguard-tray";      // http://doseguard-tray.local/sna
 const framesize_t FRAME_SIZE = FRAMESIZE_VGA; // 640x480: enough for the corner markers and pill outlines
 const int JPEG_QUALITY = 12;                  // 10-63, lower = better quality and bigger files
 const int MAX_STALE_DISCARDS = 4;             // buffered frames thrown away per request at most
-const char* FW_VERSION = "doseguard-tray-0.2";
+const char* FW_VERSION = "doseguard-tray-0.8";
 // Inside the closed box it is dark. The board's white LED (GPIO 4) gives a steady, dim light so every
 // frame is exposed the same way (counting is by colour). 0 = off, 255 = full (too bright and hot).
 const int FLASH_LED_PIN = 4;
 const int LIGHT_DUTY = 40;
+const int LIGHT_PWM_HZ = 20000;  // well above the sensor's line rate, so the dimmed LED doesn't draw flickering bands
 
 // ---------------------------------------------------------------- AI Thinker pin map
 #define PWDN_GPIO_NUM 32
@@ -66,7 +71,10 @@ const int LIGHT_DUTY = 40;
 char bootId[9];
 uint32_t frameSeq = 0;
 uint32_t served = 0, rejectedStale = 0, captureFailures = 0;
+uint32_t streamSeq = 0;
+std::atomic<int> snapshotsWaiting{0};  // the preview stream stops taking frames while this is above 0
 httpd_handle_t server = nullptr;
+httpd_handle_t streamServer = nullptr;
 
 static int64_t captureUs(const camera_fb_t* fb) {
   // The camera driver stamps each frame with esp_timer time when it was taken.
@@ -78,6 +86,7 @@ static esp_err_t snapshotHandler(httpd_req_t* req) {
   const int64_t requestUs = esp_timer_get_time();
   camera_fb_t* fb = nullptr;
   // Throw away anything captured before the request arrived; only a newer frame is proof of "now".
+  snapshotsWaiting++;
   for (int i = 0; i <= MAX_STALE_DISCARDS; i++) {
     fb = esp_camera_fb_get();
     if (!fb) break;
@@ -87,6 +96,7 @@ static esp_err_t snapshotHandler(httpd_req_t* req) {
     rejectedStale++;
   }
   if (!fb) {
+    snapshotsWaiting--;
     captureFailures++;
     httpd_resp_set_status(req, "503 Service Unavailable");
     httpd_resp_set_type(req, "text/plain");
@@ -108,16 +118,49 @@ static esp_err_t snapshotHandler(httpd_req_t* req) {
   httpd_resp_set_hdr(req, "X-Frame-Height", h);
   esp_err_t res = httpd_resp_send(req, (const char*)fb->buf, fb->len);
   esp_camera_fb_return(fb);
+  snapshotsWaiting--;  // held through the send: on a slow link the preview must not compete for WiFi airtime
   if (res == ESP_OK) served++;
   return res;
 }
 
+// Preview video. It runs on its own server (port 81) so a long-lived stream cannot block /snapshot.
+static esp_err_t streamHandler(httpd_req_t* req) {
+  httpd_resp_set_type(req, "multipart/x-mixed-replace;boundary=frame");
+  httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+  char head[192];
+  int misses = 0;
+  while (misses < 25) {
+    while (snapshotsWaiting.load() > 0) vTaskDelay(pdMS_TO_TICKS(2));
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) {
+      misses++;
+      vTaskDelay(pdMS_TO_TICKS(20));
+      continue;
+    }
+    misses = 0;
+    streamSeq++;
+    int n = snprintf(head, sizeof(head),
+                     "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: %u\r\nX-Boot-Id: %s\r\n"
+                     "X-Frame-Seq: %lu\r\nX-Capture-Age-Ms: %lld\r\n\r\n",
+                     (unsigned)fb->len, bootId, (unsigned long)streamSeq,
+                     (long long)((esp_timer_get_time() - captureUs(fb)) / 1000));
+    esp_err_t res = httpd_resp_send_chunk(req, head, n);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, (const char*)fb->buf, fb->len);
+    if (res == ESP_OK) res = httpd_resp_send_chunk(req, "\r\n", 2);
+    esp_camera_fb_return(fb);
+    if (res != ESP_OK) return ESP_FAIL;  // the viewer left
+    vTaskDelay(1);
+  }
+  return ESP_FAIL;
+}
+
 static esp_err_t statusHandler(httpd_req_t* req) {
-  char body[320];
+  char body[360];
   snprintf(body, sizeof(body),
-           "{\"fw\":\"%s\",\"boot\":\"%s\",\"seq\":%lu,\"served\":%lu,\"stale_discarded\":%lu,"
+           "{\"fw\":\"%s\",\"boot\":\"%s\",\"seq\":%lu,\"served\":%lu,\"streamed\":%lu,\"stale_discarded\":%lu,"
            "\"capture_failures\":%lu,\"rssi\":%d,\"heap\":%u,\"psram\":%u,\"uptime_ms\":%llu}",
-           FW_VERSION, bootId, (unsigned long)frameSeq, (unsigned long)served, (unsigned long)rejectedStale,
+           FW_VERSION, bootId, (unsigned long)frameSeq, (unsigned long)served, (unsigned long)streamSeq,
+           (unsigned long)rejectedStale,
            (unsigned long)captureFailures, (int)WiFi.RSSI(), (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getFreePsram(),
            (unsigned long long)(esp_timer_get_time() / 1000));
   httpd_resp_set_type(req, "application/json");
@@ -134,8 +177,8 @@ static esp_err_t rootHandler(httpd_req_t* req) {
 // ---------------------------------------------------------------- setup
 static bool startCamera() {
   camera_config_t c = {};
-  c.ledc_channel = LEDC_CHANNEL_0;
-  c.ledc_timer = LEDC_TIMER_0;
+  c.ledc_channel = LEDC_CHANNEL_7;  // kept away from the light on GPIO 4, which the Arduino core puts on channel 0
+  c.ledc_timer = LEDC_TIMER_3;
   c.pin_d0 = Y2_GPIO_NUM; c.pin_d1 = Y3_GPIO_NUM; c.pin_d2 = Y4_GPIO_NUM; c.pin_d3 = Y5_GPIO_NUM;
   c.pin_d4 = Y6_GPIO_NUM; c.pin_d5 = Y7_GPIO_NUM; c.pin_d6 = Y8_GPIO_NUM; c.pin_d7 = Y9_GPIO_NUM;
   c.pin_xclk = XCLK_GPIO_NUM; c.pin_pclk = PCLK_GPIO_NUM; c.pin_vsync = VSYNC_GPIO_NUM; c.pin_href = HREF_GPIO_NUM;
@@ -146,13 +189,23 @@ static bool startCamera() {
   c.frame_size = FRAME_SIZE;
   c.jpeg_quality = JPEG_QUALITY;
   c.grab_mode = CAMERA_GRAB_LATEST;  // newest frame first; stale ones are still discarded above
-  if (psramFound()) { c.fb_count = 2; c.fb_location = CAMERA_FB_IN_PSRAM; }
+  // Three buffers: one each for a snapshot and the stream to hold, and one left for the camera to fill.
+  if (psramFound()) { c.fb_count = 3; c.fb_location = CAMERA_FB_IN_PSRAM; }
   else { c.fb_count = 1; c.fb_location = CAMERA_FB_IN_DRAM; c.frame_size = FRAMESIZE_QVGA; }
   esp_err_t err = esp_camera_init(&c);
   if (err != ESP_OK) { Serial.printf("Camera init failed: 0x%x\n", err); return false; }
   sensor_t* s = esp_camera_sensor_get();
   s->set_whitebal(s, 1);
   s->set_exposure_ctrl(s, 1);
+  s->set_bpc(s, 1);      // hide stuck pixels
+  s->set_wpc(s, 1);
+  s->set_raw_gma(s, 1);
+  s->set_lenc(s, 1);     // even out the dark corners of the wide lens
+  if (s->id.PID == OV3660_PID) {  // this board's sensor: Espressif's own tuning for it
+    s->set_vflip(s, 1);
+    s->set_brightness(s, 2);
+    s->set_saturation(s, -2);
+  }
   // Let auto exposure and white balance settle before anyone asks for a frame.
   for (int i = 0; i < 8; i++) { camera_fb_t* fb = esp_camera_fb_get(); if (fb) esp_camera_fb_return(fb); delay(60); }
   return true;
@@ -169,15 +222,25 @@ static void startServer() {
   httpd_register_uri_handler(server, &snap);
   httpd_register_uri_handler(server, &stat);
   httpd_register_uri_handler(server, &root);
+
+  httpd_config_t streamCfg = HTTPD_DEFAULT_CONFIG();
+  streamCfg.server_port = 81;
+  streamCfg.ctrl_port = cfg.ctrl_port + 1;
+  streamCfg.max_open_sockets = 2;
+  streamCfg.lru_purge_enable = true;
+  streamCfg.send_wait_timeout = 2;  // a viewer that vanished must not hold a frame buffer for long
+  if (httpd_start(&streamServer, &streamCfg) != ESP_OK) { Serial.println("Stream server failed to start"); return; }
+  httpd_uri_t stream = {.uri = "/stream", .method = HTTP_GET, .handler = streamHandler, .user_ctx = nullptr};
+  httpd_register_uri_handler(streamServer, &stream);
 }
 
 void setup() {
   Serial.begin(115200);
   snprintf(bootId, sizeof(bootId), "%08lx", (unsigned long)esp_random());
   Serial.printf("\nDoseGuard tray camera %s, boot %s\n", FW_VERSION, bootId);
-  // Steady light before the camera settles its exposure. ledcAttach picks a free LEDC channel, so it
-  // does not clash with the camera clock on channel 0.
-  if (LIGHT_DUTY > 0 && ledcAttach(FLASH_LED_PIN, 5000, 8)) ledcWrite(FLASH_LED_PIN, LIGHT_DUTY);
+  // Steady light before the camera settles its exposure. ledcAttach takes the lowest free LEDC channel
+  // and cannot see the camera driver's use of LEDC, so startCamera() keeps its clock on channel 7 / timer 3.
+  if (LIGHT_DUTY > 0 && ledcAttach(FLASH_LED_PIN, LIGHT_PWM_HZ, 8)) ledcWrite(FLASH_LED_PIN, LIGHT_DUTY);
   if (!startCamera()) {
     Serial.println("Restarting in 5 s.");
     delay(5000);

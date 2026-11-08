@@ -784,7 +784,7 @@ class VisionService:
             return {**out, "simulated": True, "ready": self._sim_ready(kind, expected or {})}
         role = "tray" if kind == "tray" else "face"
         async with self._hint_lock:
-            f = await self.camera.frame(role)
+            f = await self.camera.live_frame(role)
             now = self.clock.monotonic()
             if f is None or now - f.capture_mono > 1.0:
                 return {**out, "available": False}

@@ -2603,8 +2603,9 @@ function cameraLoop() {
   // With the in-box tray camera, tray steps show that camera; everything else shows the laptop camera.
   const trayStep = s && s.workflow.txn && (s.workflow.txn.pose === "TRAY" || (S.live && S.live.kind === "tray"));
   const role = S.view === "verify" && wantPreview && trayStep && s.camera.mode === "dual_camera" ? "tray" : "face";
-  const mirrorFace = !!wantPreview && (S.view === "setup" || s.workflow.txn.pose === "FACE");
-  cameraStream(S.cameraImg, wantPreview ? role : null, mirrorFace);
+  // Every live preview is mirrored, so moving something left moves it left on screen. Display only:
+  // the checks and the saved proof photos use the real, unmirrored picture.
+  cameraStream(S.cameraImg, wantPreview ? role : null, !!wantPreview);
   cameraStream(S.labelImg, live && S.view === "setup" && S.capturingFor != null ? "face" : null);
   setTimeout(cameraLoop, 250);
 }
