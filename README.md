@@ -143,6 +143,10 @@ touching tokens, hidden markers, blur, and whether a hand-to-mouth movement happ
 - **Desktop notifications** (Display panel, off by default): a notice when a dose becomes due while the page is in
   the background. Clicking it only brings DoseGuard forward.
 
+## Public demo (hosted)
+
+`PUBLIC_DEMO=1` runs a shared demo on a host such as Railway (`Dockerfile`). It always uses the simulated dispenser and cameras and cannot talk to a real box. Visitors share one built-in guest: accounts, sign-out, hand-over and leaving demo mode are closed. Everything, including uploaded label photos, is wiped every `DEMO_RESET_MINUTES` (30). It needs `PUBLIC_HOST` (or Railway's `RAILWAY_PUBLIC_DOMAIN`). Optional: `GENAI_BACKEND=developer_api`, `GEMINI_API_KEY` and `AI_REQUEST_LIMIT=100`, set in the host's private variables. The AI count restarts when the server restarts. Without `PUBLIC_DEMO`, the app still refuses anything but loopback.
+
 ## Look, accessibility and language
 
 The interface is a sky: a band across the top follows the real time of day (dawn, day, dusk, night), today's doses

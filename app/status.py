@@ -128,6 +128,7 @@ def build_status(services) -> dict:
         "ai": services.ai.status(),
         "account": services.account.brief(),  # exists, name, unlocked only
         "signed_out": False,
+        "public_demo": s.demo_reset_minutes if s.public_demo else None,
         "config": {"hardware_mode": s.hardware_mode, "camera_mode": s.camera_mode,
                    "snooze_minutes": s.snooze_minutes, "followup_minutes": s.followup_minutes,
                    "hand_check": services.engine.hand_check_on, "sound_max": s.sound_max, "needs_review_minutes": s.needs_review_minutes},

@@ -9,6 +9,8 @@ import io
 import json
 import logging
 import secrets
+import shutil
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import timedelta
@@ -243,11 +245,17 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         engine.start()
         reminders.start()
         await ai.init()
+        demo_task = None
+        if settings.public_demo:
+            await _public_demo_prepare(svc)
+            demo_task = asyncio.create_task(_public_demo_loop(svc))
         store.log("APP_STARTED", details={"hardware": settings.hardware_mode, "camera": settings.camera_mode,
                                           "ai": settings.genai_backend})
         try:
             yield
         finally:
+            if demo_task:
+                demo_task.cancel()
             await reminders.stop()
             await engine.stop_task()
             await camera.stop()
@@ -256,8 +264,12 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
 
     app = FastAPI(title="DoseGuard", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
     hosts = ["127.0.0.1", "localhost", "[::1]", "::1"] + (["testserver"] if testing else [])
+    if settings.public_demo:
+        hosts.append(settings.public_host)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
     allowed_origins = {f"http://{h}:{settings.port}" for h in ("127.0.0.1", "localhost", "[::1]")}
+    if settings.public_demo:
+        allowed_origins.add(f"https://{settings.public_host}")
 
     def harden(resp: Response) -> Response:
         resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -281,6 +293,9 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
             if not secrets.compare_digest(request.headers.get("x-doseguard-token", ""), svc.token):
                 return JSONResponse({"result": "rejected", "reason_codes": ["BAD_TOKEN"],
                                      "message": "Missing or wrong session token. Reload the page."}, 403)
+            if settings.public_demo and path in PUBLIC_DEMO_BLOCKED:
+                return harden(JSONResponse({"request_id": None, "state_version": svc.store.version, "result": "rejected",
+                                            "reason_codes": ["PUBLIC_DEMO"], "message": message("PUBLIC_DEMO")}, 403))
             # The one place Setup is guarded (list in app/account.py). Checked before the body is read.
             setup = is_setup_route(request.method, request.scope["path"])
             if setup and svc.account.setup_locked():
@@ -636,6 +651,7 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         return result
 
     MAX_LABEL_PHOTOS = 4
+    PUBLIC_DEMO_MAX_LABELS = 40  # between wipes; uploads must not fill the host's disk
 
     async def save_label(request: Request, svc: Services, request_id: str, data: bytes, mime: str,
                          source: str, sharpness: float | None, label_id: str | None = None) -> dict:
@@ -645,6 +661,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
             row = svc.store.q1("SELECT label_id FROM label_scans WHERE label_id=?", (label_id,))
             if not row:
                 raise WorkflowError(404, "NOT_FOUND", "Label not found. Start a new label photo.")
+        if svc.settings.public_demo and svc.store.q1("SELECT COUNT(*) AS n FROM label_scans")["n"] >= PUBLIC_DEMO_MAX_LABELS:
+            raise WorkflowError(429, "VALIDATION", "The demo has enough label photos for now. It resets soon; try again then.")
         n = svc.store.q1("SELECT COUNT(*) AS n FROM label_images WHERE label_id=?", (label_id or "-",))["n"]
         if n >= MAX_LABEL_PHOTOS:
             raise WorkflowError(409, "VALIDATION", f"At most {MAX_LABEL_PHOTOS} photos per label.")
@@ -822,17 +840,7 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         require_idle(svc)
         if not svc.store.demo:
             raise WorkflowError(409, "DEMO_MISMATCH", "Demo reset is available only in demo mode.")
-        photos = [json.loads(r["details_json"] or "{}").get("photo") for r in
-                  svc.store.q("SELECT details_json FROM observations WHERE demo=1 AND details_json LIKE '%photo%'")]
-        evidence.delete(svc.settings.data_dir, [p for p in photos if p])
-        with svc.store.tx() as conn:
-            txns = [r["txn_id"] for r in conn.execute("SELECT txn_id FROM transactions WHERE demo=1").fetchall()]
-            for t in txns:
-                conn.execute("DELETE FROM commands WHERE txn_id=?", (t,))
-            for table in ("reminders", "doses", "transactions", "observations", "events", "plan_versions"):
-                conn.execute(f"DELETE FROM {table} WHERE demo=1")
-            svc.store.event(conn, "DEMO_RESET", demo=1)
-        _create_demo_plan(svc)
+        _wipe_demo(svc)
         return ok(request, body.request_id, {"reset": True})
 
     # ------------------------------------------------------------ tray calibration
@@ -1008,6 +1016,112 @@ def _save_free_obs(svc: Services, obs: Observation) -> int:
 def _tz(svc: Services):
     from .status import tz_for
     return tz_for(svc)
+
+
+def _wipe_demo(svc: Services) -> None:
+    """Delete all demo records and start again from a fresh demo plan. In the public demo this also removes
+    every label photo a visitor uploaded."""
+    photos = [json.loads(r["details_json"] or "{}").get("photo") for r in
+              svc.store.q("SELECT details_json FROM observations WHERE demo=1 AND details_json LIKE '%photo%'")]
+    evidence.delete(svc.settings.data_dir, [p for p in photos if p])
+    with svc.store.tx() as conn:
+        txns = [r["txn_id"] for r in conn.execute("SELECT txn_id FROM transactions WHERE demo=1").fetchall()]
+        for t in txns:
+            conn.execute("DELETE FROM commands WHERE txn_id=?", (t,))
+        for table in ("reminders", "doses", "transactions", "observations", "events", "plan_versions"):
+            conn.execute(f"DELETE FROM {table} WHERE demo=1")
+        if svc.settings.public_demo:
+            conn.execute("DELETE FROM label_images")
+            conn.execute("DELETE FROM label_scans")
+            conn.execute("DELETE FROM cartridge_stock")
+            svc.store.meta_set(conn, "hand_check", "0")
+        svc.store.event(conn, "DEMO_RESET", demo=1)
+    if svc.settings.public_demo:
+        shutil.rmtree(svc.settings.data_dir / "labels", ignore_errors=True)
+    _create_demo_plan(svc)
+
+
+# Accounts and leaving demo mode are closed in the public demo: one visitor must not be able to lock out the rest.
+PUBLIC_DEMO_BLOCKED = {"/api/account/create", "/api/account/unlock", "/api/account/lock", "/api/account/password",
+                       "/api/account/handover", "/api/demo/mode"}
+
+
+async def _public_demo_arm(svc: Services) -> None:
+    for _ in range(60):
+        f = svc.hardware.fields
+        if svc.hardware.connected and f.get("hA") and f.get("hB"):
+            try:
+                await svc.engine.arm(uuid.uuid4().hex, True)
+                return
+            except WorkflowError as exc:
+                log.info("public demo: not armed yet (%s)", exc.code)
+        await asyncio.sleep(0.25)
+    log.warning("public demo: the simulated dispenser did not become ready")
+
+
+async def _public_demo_prepare(svc: Services) -> None:
+    """Set up the built-in guest, so no visitor sees the welcome form or can claim the box. Nobody knows
+    the guest's password: it is random and never stored outside its hash."""
+    if not svc.account.brief()["exists"]:
+        await svc.account.create(uuid.uuid4().hex, "", secrets.token_urlsafe(24), "Guest", "Demo")
+    svc.account.keep_signed_in()
+    if not svc.store.current_person():
+        person_id = uuid.uuid4().hex[:10]
+        ref, err = await svc.vision.enroll(person_id)
+        if err:
+            raise RuntimeError(f"public demo could not set up the simulated face: {err}")
+        now = svc.store.now()
+        with svc.store.tx() as conn:
+            conn.execute("INSERT INTO persons (person_id, label, consent_at, embedding_ref, simulated, created_at) VALUES (?,?,?,?,?,?)",
+                         (person_id, "Guest Demo", now, ref, 1, now))
+    with svc.store.tx() as conn:
+        svc.store.meta_set(conn, "demo_mode", "1")
+    _wipe_demo(svc)
+    await _public_demo_arm(svc)
+
+
+async def _public_demo_refresh(svc: Services) -> None:
+    """Back to a clean, armed dispenser, whatever visitors left behind (STOP, faults, a pulled cable)."""
+    hw = svc.hardware
+    hw.sim("reconnect")
+    for _ in range(40):
+        if hw.connected:
+            break
+        await asyncio.sleep(0.25)
+    old = hw.session
+    await svc.engine.reset(uuid.uuid4().hex, True)
+    for _ in range(40):
+        if hw.connected and hw.session != old:
+            break
+        await asyncio.sleep(0.25)
+    await asyncio.sleep(0.5)
+    hw.sim("ack_delay", seconds=0)
+    hw.sim("open_door", force=True)
+    for channel in ("A", "B"):
+        hw.sim("feed_mode", channel=channel, mode="ok")
+        hw.sim("place_token", channel=channel, n=-99)
+    hw.sim("close_door")
+    svc.vision.stop_watch()
+    svc.vision.set_sim("recipient", "auto", "taken", "shown")
+    _wipe_demo(svc)
+    await _public_demo_arm(svc)
+
+
+async def _public_demo_loop(svc: Services) -> None:
+    period = svc.settings.demo_reset_minutes * 60
+    last = time.monotonic()
+    while True:
+        await asyncio.sleep(min(60, period))
+        if time.monotonic() - last < period:
+            continue
+        txn = svc.engine.active_txn()
+        if txn and svc.store.clock.now() - parse(txn["created_at"]) < timedelta(minutes=10):
+            continue  # someone is in the middle of a dose: try again in a minute
+        try:
+            await _public_demo_refresh(svc)
+        except Exception:
+            log.exception("public demo reset failed")
+        last = time.monotonic()
 
 
 def _create_demo_plan(svc: Services) -> None:

@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+.venv
+data
+models
+output
+firmware
+tests
+docs
+.impeccable
+.pytest_cache
+**/__pycache__

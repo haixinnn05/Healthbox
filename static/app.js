@@ -497,6 +497,8 @@ function rerender(force = false) {
   const unlocked = !!(acct && acct.unlocked);
   if (S.lastUnlocked !== undefined && S.lastUnlocked !== unlocked && DOOR_VIEWS.includes(S.view)) { S.lastUnlocked = unlocked; route(); return; }
   S.lastUnlocked = unlocked;
+  const publicNote = document.getElementById("public-note");
+  if (publicNote) { publicNote.hidden = !s.public_demo; publicNote.textContent = s.public_demo ? t("public.note", { n: s.public_demo }) : ""; }
   if (DOOR_VIEWS.includes(S.view) && setupLocked()) {
     // Signed out: Setup, medicines and history show the sign-in panel only (their data needs sign-in).
     if (S.keys[S.view] !== "signed-out") { S.keys[S.view] = "signed-out"; doorMain(S.view); }
@@ -1461,7 +1463,7 @@ function doorHead(active, locked = false) {
   const a = S.status && S.status.account;
   return h("div", { class: "door-head" },
     h("div", { class: "row" }, h("h1", {}, t("care.title")),
-      a && a.exists && !locked ? h("button", { class: "btn btn-quiet", type: "button", onclick: lockSetup }, icon("sign-out"), t("lock.lock")) : null),
+      a && a.exists && !locked && !(S.status && S.status.public_demo) ? h("button", { class: "btn btn-quiet", type: "button", onclick: lockSetup }, icon("sign-out"), t("lock.lock")) : null),
     locked ? null : h("nav", { class: "subtabs", "aria-label": t("care.title") }, DOOR_TABS.map(([v, ic]) =>
       h("a", { href: `#${v}`, "aria-current": v === active ? "page" : null }, icon(ic), t(`nav.${v}`)))));
 }
@@ -1734,7 +1736,7 @@ function drawSetup() {
         h("div", { class: "row" }, enrollBtn),
         data.camera_simulated ? null : h("p", { class: "muted small" }, "While capturing, face the camera alone and turn slightly left and right.")),
       livePreview),
-    acctName && me ? handoverBlock(acctName) : null,
+    acctName && me && !(S.status && S.status.public_demo) ? handoverBlock(acctName) : null,
     errFor(undefined, "person_id"),
     st.errors.filter((e) => e.entry == null && e.field === "person_id").map((e) => h("div", { class: "field-error" }, e.message)));
   async function enroll() {
@@ -2455,7 +2457,7 @@ function devPanel(s) {
       h("dt", {}, "AI"), h("dd", {}, ai.backend === "off" ? "Off" : `${ai.backend}, ${ai.model}, ${ai.ready ? "ready" : "not ready"}`),
       ai.error ? [h("dt", {}, "AI note"), h("dd", {}, ai.error)] : null,
       h("dt", {}, "AI requests"), h("dd", {}, `${ai.requests_used} of ${ai.request_limit}. Tokens in ${ai.tokens.input}, out ${ai.tokens.output}${ai.last_outcome ? `. Last: ${ai.last_outcome}` : ""}`),
-      h("dt", {}, "Demo mode"), h("dd", {}, h("button", { class: "btn btn-quiet", disabled: !!s.workflow.txn || !!S.busy,
+      s.public_demo ? null : h("dt", {}, "Demo mode"), s.public_demo ? null : h("dd", {}, h("button", { class: "btn btn-quiet", disabled: !!s.workflow.txn || !!S.busy,
         onclick: () => act("demo", () => api("/api/demo/mode", { enabled: !s.demo_mode })) }, s.demo_mode ? "Turn off demo mode" : "Turn on demo mode"))),
     h("p", { class: "muted small", style: "margin-top:.75rem" }, "Check real spending in the provider console. These counts are local limits, not a money cap."));
 }

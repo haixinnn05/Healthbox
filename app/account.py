@@ -99,6 +99,11 @@ class AccountService:
         self._failures: list[datetime] = []
         self._lock = asyncio.Lock()  # one password check at a time
 
+    def keep_signed_in(self) -> None:
+        """Public demo only: the built-in guest is always signed in."""
+        self._signed_in = True
+        self._unlocked_until = None
+
     # -- reading ----------------------------------------------------------------
     def _name(self) -> str | None:
         row = self.store.q1("SELECT name FROM account WHERE account_id=1")
