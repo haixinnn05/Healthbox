@@ -108,6 +108,7 @@ Copy `.env.example` to `.env`. Main switches:
 | `HARDWARE_MODE` | `fake` (default) or `serial` |
 | `SERIAL_PORT` | e.g. `/dev/cu.usbserial-0001` (`ls /dev/cu.*`) |
 | `CAMERA_MODE` | `simulated`, `single_laptop`, `dual_camera` |
+| `TRAY_BYPASS` | `1` = testing only: real face check, tray results from the simulator. Refused with `HARDWARE_MODE=serial`. |
 | `TRAY_CAMERA_URL` | ESP32-CAM snapshot URL (dual_camera) |
 | `GENAI_BACKEND` | `off`, `developer_api` (AI Studio key), `google_cloud` |
 | `GEMINI_MODEL`, `GEMINI_API_KEY` | check the model ID in AI Studio first |

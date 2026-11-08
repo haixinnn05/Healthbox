@@ -153,6 +153,22 @@ function tzDiffers(zone = tz()) {
   return !!(zone && LAPTOP_TZ && zoneOffset(zone) !== zoneOffset(LAPTOP_TZ));
 }
 const zoneCity = (zone) => (zone || "").split("/").pop().replace(/_/g, " ");
+// "Eastern Time (New York)" instead of "America/New_York".
+function zoneName(zone) {
+  if (!zone) return "";
+  if (zone === "UTC") return "UTC";
+  let generic = "";
+  try {
+    generic = new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "longGeneric" }).formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName").value;
+  } catch {}
+  return generic && !/^GMT/.test(generic) ? `${generic} (${zoneCity(zone)})` : zoneCity(zone);
+}
+function zoneOption(zone) {
+  let now = "";
+  try { now = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit", timeZone: zone }).format(new Date()); } catch {}
+  return `${zoneName(zone)}, now ${now}${zone === LAPTOP_TZ ? ", this laptop" : ""}`;
+}
 function fmtClock(iso) {
   if (!iso) return "";
   // Name the zone whenever it is not the laptop's own, so "4:05 PM" can never be misread.
@@ -176,7 +192,65 @@ function hourOf(date) {
   const get = (k) => Number((parts.find((p) => p.type === k) || {}).value || 0);
   return (get("hour") % 24) + get("minute") / 60;
 }
-function skyPhase(hr) { return hr < 6 || hr >= 20 ? "night" : hr < 9 ? "dawn" : hr < 17 ? "day" : "dusk"; }
+/* ---------------------------------------------------------------- the real sun
+   Sunrise and sunset for today, from the standard sunrise equation, at the plan timezone's city (or a point
+   on that timezone's meridian at 40°N). Hours are counted from today's local midnight in the plan's timezone. */
+const ZONE_COORDS = {
+  "America/New_York": [40.71, -74.01], "America/Detroit": [42.33, -83.05], "America/Chicago": [41.88, -87.63],
+  "America/Denver": [39.74, -104.99], "America/Phoenix": [33.45, -112.07], "America/Los_Angeles": [34.05, -118.24],
+  "America/Anchorage": [61.22, -149.9], "Pacific/Honolulu": [21.31, -157.86], "America/Toronto": [43.65, -79.38],
+  "America/Mexico_City": [19.43, -99.13], "Europe/London": [51.51, -0.13], "Europe/Madrid": [40.42, -3.7],
+  "Asia/Shanghai": [31.23, 121.47], "Asia/Hong_Kong": [22.32, 114.17], "Asia/Taipei": [25.03, 121.57],
+};
+function zoneCoords(zone) {
+  if (ZONE_COORDS[zone]) return ZONE_COORDS[zone];
+  // Unknown zone: a point on its standard meridian (offset x 15°) at 40°N is close enough for a sky picture.
+  const m = /GMT([+-]\d+)(?::(\d+))?/.exec(zoneOffset(zone || "UTC") || "");
+  const off = m ? Number(m[1]) + Math.sign(Number(m[1])) * Number(m[2] || 0) / 60 : 0;
+  return [40, off * 15];
+}
+function sunEvents(dayDate, lat, lon) {
+  const rad = Math.PI / 180;
+  const J = dayDate.getTime() / 86400000 + 2440587.5;
+  const n = Math.round(J - 2451545.0 + 0.0008);
+  const Js = n - lon / 360;
+  const M = (357.5291 + 0.98560028 * Js) % 360;
+  const C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad) + 0.0003 * Math.sin(3 * M * rad);
+  const L = (M + C + 180 + 102.9372) % 360;
+  const Jt = 2451545.0 + Js + 0.0053 * Math.sin(M * rad) - 0.0069 * Math.sin(2 * L * rad);
+  const dec = Math.asin(Math.sin(L * rad) * Math.sin(23.4397 * rad));
+  const cosW = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(dec)) / (Math.cos(lat * rad) * Math.cos(dec));
+  const toDate = (j) => new Date((j - 2440587.5) * 86400000);
+  if (cosW > 1) return null; // polar night: treat as no day
+  const w0 = Math.acos(Math.min(1, cosW)) / rad;
+  return { rise: toDate(Jt - w0 / 360), set: toDate(Jt + w0 / 360) };
+}
+let SUN_CACHE = { key: "", v: null };
+function sunToday() {
+  const zone = tz() || LAPTOP_TZ || "UTC";
+  const now = new Date();
+  const key = `${zone}|${new Intl.DateTimeFormat("en-CA", { timeZone: zone }).format(now)}`;
+  if (SUN_CACHE.key === key) return SUN_CACHE.v;
+  const [lat, lon] = zoneCoords(zone);
+  const nowHr = hourOf(now);
+  const at = (hrs) => new Date(now.getTime() + (hrs - nowHr) * 3600000); // local hour (from today's midnight) -> Date
+  const hr = (d) => nowHr + (d - now) / 3600000;
+  const ev = (offsetDays) => sunEvents(at(12 + 24 * offsetDays), lat, lon);
+  const today = ev(0), yesterday = ev(-1), tomorrow = ev(1);
+  const v = today && yesterday && tomorrow
+    ? { rise: hr(today.rise), set: hr(today.set), prevSet: hr(yesterday.set), nextRise: hr(tomorrow.rise) }
+    : { rise: 6.5, set: 18.5, prevSet: -5.5, nextRise: 30.5 };
+  SUN_CACHE = { key, v };
+  return v;
+}
+// The sky stays light all day and night (the user preferred it); after dark it keeps the soft dusk colours and the
+// moon shows that it is night.
+function skyPhase(hr) {
+  const sun = sunToday();
+  if (hr >= sun.rise - 0.5 && hr < sun.rise + 2) return "dawn";
+  if (hr >= sun.rise + 2 && hr < sun.set - 2) return "day";
+  return "dusk";
+}
 function dayWord(c) {
   if (!c.due_day || c.due_day === "Today") return "";
   return hasKey(`day.${c.due_day}`) ? t(`day.${c.due_day}`) : new Intl.DateTimeFormat(locale(), { weekday: "short", month: "short", day: "numeric", timeZone: tz() }).format(new Date(c.due_at_utc));
@@ -431,6 +505,7 @@ function renderChips() {
   if (!cam.simulated && cam.face && cam.face.error) items.push([true, "camera-slash", t("chip.cam_bad")]);
   else items.push([false, tx && tx.pose === "TRAY" ? "squares-four" : "camera", pose || (cam.simulated ? t("chip.cam_sim") : t("chip.cam_ok")), null, !pose]);
   if (tzDiffers()) items.push([false, "globe-hemisphere-west", t("chip.tz", { tz: zoneCity(tz()) }), PREFS.simple ? null : "#schedules"]);
+  if (s.vision && s.vision.tray_bypass) items.push([true, "flask", t("chip.tray_bypass")]);
   for (const [alert, ic, text, link, calm] of items) {
     if (PREFS.simple && calm) continue;
     box.append(notice(alert, ic, text, link, !!calm));
@@ -484,12 +559,16 @@ function refreshAll() {
 
 /* ---------------------------------------------------------------- the sky (Today only) */
 const ARC = { cx: 500, cy: 285, rx: 470, ry: 255 }; // a 1000 x 300 box
-// The arc is one half of the day. Day: the sun crosses 6 AM to 8 PM. Night: the moon crosses 8 PM to 6 AM,
-// then the sun comes round again. Hours here count from today's midnight in the plan's timezone, so 26 is 2 AM tomorrow.
+// The arc is one half of the day. Day: the sun crosses from today's real sunrise to sunset. Night: the moon crosses
+// from sunset to the next sunrise, then the sun comes round again. Hours count from today's local midnight in the
+// plan's timezone, so 26 is 2 AM tomorrow.
+// One arc for the medicine day, 5 AM to 11 PM, read left to right. "Now" travels along it as the sun while it is
+// light and as the moon after the real sunset. Before 5 AM it waits at the start; after 11 PM it rests at the end.
+const MED_DAY = { from: 5, to: 23 };
 function skyWindow(nowHr) {
-  if (nowHr >= 6 && nowHr < 20) return { night: false, from: 6, to: 20, ticks: [[6, "sky.h6"], [12, "sky.h12"], [18, "sky.h18"]] };
-  if (nowHr >= 20) return { night: true, from: 20, to: 30, ticks: [[20, "sky.h20"], [24, "sky.h24"], [28, "sky.h4"]] };
-  return { night: true, from: -4, to: 6, ticks: [[-4, "sky.h20"], [0, "sky.h24"], [4, "sky.h4"]] };
+  const sun = sunToday();
+  return { night: nowHr < sun.rise || nowHr >= sun.set, from: MED_DAY.from, to: MED_DAY.to,
+    ticks: [[5, "sky.h5"], [12, "sky.h12"], [18, "sky.h18"], [23, "sky.h23"]] };
 }
 function arcPoint(hr, w) {
   const f = Math.min(1, Math.max(0, (hr - w.from) / (w.to - w.from)));
@@ -516,15 +595,12 @@ function renderSky(s) {
   svg.setAttribute("viewBox", "0 0 1000 300");
   svg.setAttribute("preserveAspectRatio", "none");
   const path = (d, cls) => { const p = document.createElementNS(ns, "path"); p.setAttribute("d", d); if (cls) p.setAttribute("class", cls); return p; };
-  svg.append(path(`M ${start.x} ${start.y} A ${ARC.rx} ${ARC.ry} 0 0 1 ${end.x} ${end.y}`),
-    path(`M ${start.x} ${start.y} A ${ARC.rx} ${ARC.ry} 0 0 1 ${body.x.toFixed(1)} ${body.y.toFixed(1)}`, "walked"));
+  // Solid for the part of the day already lived, dashed for the rest. Never both on top of each other.
+  const bx = body.x.toFixed(1), by = body.y.toFixed(1);
+  svg.append(path(`M ${start.x} ${start.y} A ${ARC.rx} ${ARC.ry} 0 0 1 ${bx} ${by}`, "walked"),
+    path(`M ${bx} ${by} A ${ARC.rx} ${ARC.ry} 0 0 1 ${end.x} ${end.y}`, "ahead"));
   const arc = h("div", { class: `arc ${w.night ? "night" : "day"}`, "aria-hidden": "true" }, svg,
     h("span", { class: w.night ? "sun moon" : "sun", style: `left:${body.x / 10}%;top:${body.y / 3}%` }));
-  for (const [hr, key] of w.ticks) {
-    const pt = arcPoint(hr, w);
-    if (Math.abs(pt.x - body.x) < 45 && Math.abs(pt.y - body.y) < 45) continue; // the sun or moon is standing on it
-    arc.append(h("span", { class: `arc-hour ${arcSide(hr, w)}`, style: `left:${pt.x / 10}%;top:${pt.y / 3}%` }, t(key)));
-  }
   // Doses inside this half of the day. Same-minute doses share a point; the strongest state wins.
   const rank = { missed: 4, due: 3, wait: 2, skip: 1, done: 0 };
   const seen = new Set();
@@ -533,7 +609,8 @@ function renderSky(s) {
   let nextOutside = null;
   for (const c of doses) {
     const hr = hrOf(c.due_at_utc);
-    const st = doseState(c);
+    const st0 = doseState(c);
+    const st = st0 === "skip" ? "missed" : st0; // not taken is not taken: older "skipped" records show as missed
     if (hr < w.from - 0.01) continue;
     if (hr > w.to) {
       if (["wait", "due"].includes(st) && (!nextOutside || hr < nextOutside.hr)) nextOutside = { c, hr };
@@ -555,16 +632,39 @@ function renderSky(s) {
     const cls = `arc-point ${st} ${arcSide(hr, w)}${p === atBody ? " at-sun" : ""}`;
     const near = p === atBody ? null : { "data-hr": hr, "data-dir": hr <= now ? -1 : 1 };
     arc.append(h("span", { class: cls, style: `left:${pt.x / 10}%;top:${pt.y / 3}%`, ...near },
-      h("span", { class: "arc-dot" }), h("span", { class: "arc-time" }, fmtClock(c.due_at_utc))));
+      h("span", { class: "arc-dot" }, st === "missed" ? icon("x") : null), h("span", { class: "arc-time" }, fmtClock(c.due_at_utc))));
+  }
+  // Hour marks are the least important labels: one steps aside when the sun or moon (and its "Now" label) or a dose is near.
+  const near = (a, b, dx, dy) => Math.abs(a.x - b.x) < dx && Math.abs(a.y - b.y) < dy;
+  const dosePts = [...points.values()].map((p) => arcPoint(p.hr, w));
+  for (const [hr, key] of w.ticks) {
+    const pt = arcPoint(hr, w);
+    if (near(pt, body, 120, 90) || dosePts.some((d) => near(pt, d, 75, 60))) continue;
+    arc.append(h("span", { class: `arc-hour ${arcSide(hr, w)}`, style: `left:${pt.x / 10}%;top:${pt.y / 3}%` }, t(key)));
+  }
+  // The sun or moon says what time it is now, unless a dose due right now already labels that spot.
+  if (!atBody) {
+    const edge = body.x > 780 ? " at-end" : body.x < 220 ? " at-start" : "";
+    arc.append(h("span", { class: `arc-now${edge}`, style: `left:${body.x / 10}%;top:${body.y / 3}%` },
+      t("sky.now", { time: fmtClock(nowDate.toISOString()) })));
   }
   // The next dose in the other half of the day waits at the arc's end, so it is never out of sight.
-  if (nextOutside) {
-    arc.append(h("span", { class: "arc-next", style: `left:${end.x / 10}%;top:${end.y / 3}%` },
-      icon(w.night ? "sun" : "moon"), t(w.night ? "sky.morning" : "sky.tonight", { time: fmtClock(nextOutside.c.due_at_utc) })));
+  let nextLine = null;
+  const comingOnArc = [...points.values()].some((p) => (p.st === "wait" || p.st === "due") && p.hr >= now - 0.01);
+  if (nextOutside && !comingOnArc) {
+    // "Tonight" only for a dose later this evening; otherwise name the day ("Next: Tomorrow 4:14 PM").
+    const iso = nextOutside.c.due_at_utc;
+    const tonight = nextOutside.hr < 24;
+    const [ic, text] = tonight ? ["moon", t("sky.tonight", { time: fmtClock(iso) })]
+      : ["calendar-blank", t("sky.next", { when: fmtWhen(iso) })];
+    nextLine = h("p", { class: "sky-next" }, icon(ic), text);
   }
   Object.assign(arc.dataset, { sunHr: String(now), from: String(w.from), to: String(w.to) });
-  scene.replaceChildren(h("div", { class: "scene" }, greeting(s), arc));
+  const greet = greeting(s);
+  if (nextLine) greet.append(nextLine);
+  scene.replaceChildren(h("div", { class: "scene" }, greet, arc));
   settleArc(arc);
+  declutterArc(arc);
 }
 
 // Slide any dose that would touch the sun or moon (disc + glow + a visible gap) along the arc, in real pixels,
@@ -592,7 +692,40 @@ function settleArc(arc) {
     }
   });
 }
-window.addEventListener("resize", () => settleArc(document.querySelector("#sky-scene .arc")));
+
+// After layout, hide whichever label is less important wherever two labels touch on screen.
+// Priority: "Now", then missed or upcoming dose times, then taken dose times, then hour marks.
+function declutterArc(arc) {
+  if (!arc || !arc.isConnected) return;
+  const rank = (el) => el.classList.contains("arc-now") ? 4
+    : el.classList.contains("arc-hour") ? 1
+    : el.closest(".arc-point.done, .arc-point.skip") ? 2 : 3;
+  // "Now" first finds a place beside the sun or moon that covers no dose dot.
+  const nowEl = arc.querySelector(".arc-now");
+  if (nowEl) {
+    const dots = [...arc.querySelectorAll(".arc-dot")].filter((d) => getComputedStyle(d).visibility !== "hidden").map((d) => d.getBoundingClientRect());
+    const clear = () => { const r = nowEl.getBoundingClientRect(); return !dots.some((d) => r.left < d.right + 3 && r.right > d.left - 3 && r.top < d.bottom + 3 && r.bottom > d.top - 3); };
+    const sideward = nowEl.classList.contains("at-start") ? "pos-right" : "pos-left";
+    for (const pos of ["", "pos-below", sideward, "pos-right"]) {
+      nowEl.classList.remove("pos-below", "pos-left", "pos-right");
+      if (pos) nowEl.classList.add(pos);
+      if (clear()) break;
+    }
+  }
+  const labels = [...arc.querySelectorAll(".arc-now, .arc-time, .arc-hour")]
+    .filter((el) => getComputedStyle(el).display !== "none")
+    .sort((a, b) => rank(b) - rank(a));
+  const kept = [];
+  const pad = 4;
+  for (const el of labels) {
+    el.style.visibility = "";
+    const r = el.getBoundingClientRect();
+    const hit = kept.some((k) => r.left < k.right + pad && r.right > k.left - pad && r.top < k.bottom + pad && r.bottom > k.top - pad);
+    if (hit) el.style.visibility = "hidden";
+    else kept.push(r);
+  }
+}
+window.addEventListener("resize", () => { const arc = document.querySelector("#sky-scene .arc"); settleArc(arc); declutterArc(arc); });
 
 function greeting(s) {
   const hour = hourOf(new Date());
@@ -884,12 +1017,13 @@ function ageText(o) {
 
 function cameraPanel(s, tx) {
   const pose = tx.pose;
-  if (s.camera.simulated) {
+  const trayBypass = s.vision && s.vision.tray_bypass && pose === "TRAY";
+  if (s.camera.simulated || trayBypass) {
     const panel = h("section", { class: "panel cam-panel" },
       h("div", { class: "sim-cam" }, h("span", { class: "glyph", "aria-hidden": "true" }, icon(pose === "TRAY" ? "squares-four" : "user-focus")),
         h("div", {}, h("h3", {}, pose === "FACE" ? t("camera.face") : t("camera.tray")),
-          h("p", { class: "muted" }, t("camera.sim_sub")))));
-    if (s.vision.sim && !PREFS.simple) panel.append(simVisionControls(s));
+          h("p", { class: "muted" }, trayBypass ? t("camera.bypass_sub") : t("camera.sim_sub")))));
+    if (s.vision.sim && !PREFS.simple) panel.append(simVisionControls(s, trayBypass));
     return panel;
   }
   const cam = h("div", { class: "camera" });
@@ -899,7 +1033,7 @@ function cameraPanel(s, tx) {
   return h("section", { class: "panel cam-panel" }, cam);
 }
 
-function simVisionControls(s) {
+function simVisionControls(s, trayOnly = false) {
   // Testing only: hidden in Simple view and folded away.
   const face = h("select", { class: "plain-select", "aria-label": "Simulated face", onchange: (e) => api("/api/sim/vision", { face: e.target.value }) },
     [["recipient", "Enrolled person"], ["unknown", "Unknown person"], ["two_faces", "Two faces"], ["none", "Nobody in view"]]
@@ -908,7 +1042,7 @@ function simVisionControls(s) {
     [["auto", "Tray as simulated"], ["touching", "Objects touching"], ["markers_missing", "Markers hidden"], ["blurry", "Blurry"]]
       .map(([v, l]) => h("option", { value: v, selected: s.vision.sim.tray === v }, l)));
   return h("details", { class: "more" }, h("summary", {}, icon("caret-right"), "Camera simulator (testing)"),
-    h("div", { class: "more-body row" }, face, tray));
+    h("div", { class: "more-body row" }, trayOnly ? null : face, tray));
 }
 
 function checkedPanel(tx) {
@@ -1252,12 +1386,13 @@ function drawSetup() {
     h("p", { class: "muted small", style: "margin-top:1rem" }, "Demo tokens only, never real pills. Colour and shape do not prove what a medicine is."));
 
   // 3. Confirm
-  const zones = Array.from(new Set([d.timezone, LAPTOP_TZ, "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "UTC"].filter(Boolean)));
+  const zones = Array.from(new Set([LAPTOP_TZ, d.timezone, "America/New_York", "America/Chicago", "America/Denver", "America/Phoenix",
+    "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu", "UTC"].filter((z) => z && zoneOffset(z))));
   const tzWarn = tzDiffers(d.timezone) ? h("div", { class: "alert-box", style: "margin-top:1rem" }, icon("warning-circle"),
-    h("div", {}, h("div", { class: "what" }, `This laptop is on ${zoneCity(LAPTOP_TZ)} time, but the plan uses ${zoneCity(d.timezone)} time.`),
-      h("div", { class: "next" }, `Reminders will follow ${zoneCity(d.timezone)} time. Pick ${LAPTOP_TZ} unless that is really what you want.`))) : null;
-  const tzSel = h("select", { onchange: (e) => { d.timezone = e.target.value; d.timezone_confirmed = false; drawSetup(); } },
-    zones.map((z) => h("option", { value: z, selected: z === d.timezone }, z)));
+    h("div", {}, h("div", { class: "what" }, `This laptop is on ${zoneName(LAPTOP_TZ)}, but the plan uses ${zoneName(d.timezone)}.`),
+      h("div", { class: "next" }, `Reminders will follow ${zoneName(d.timezone)}. Pick ${zoneName(LAPTOP_TZ)} unless that is really what you want.`))) : null;
+  const tzSel = h("select", { class: "tz-select", onchange: (e) => { d.timezone = e.target.value; d.timezone_confirmed = false; drawSetup(); } },
+    zones.map((z) => h("option", { value: z, selected: z === d.timezone }, zoneOption(z))));
   const dstBox = st.dst ? h("div", { class: "note", style: "margin-top:1rem" },
     h("strong", {}, "Clock change check"),
     h("ul", {}, st.dst.slice(0, 6).map((x) => h("li", {}, `${x.date} at ${fmtTime(x.time)}: this time ${x.issue === "NONEXISTENT" ? "does not exist (the clock skips it)" : "happens twice"}.`))),
@@ -1272,7 +1407,7 @@ function drawSetup() {
       e.confirmed ? h("span", { class: "tag" }, icon("check"), "Checked") : h("span", { class: "tag" }, h("span", { class: "mark wait" }), "Not checked yet")))),
     h("div", { class: "row" }, h("label", { class: "field" }, "Time zone", tzSel)),
     h("label", { class: "check", style: "margin-top:1rem" }, h("input", { type: "checkbox", checked: d.timezone_confirmed, onchange: (e) => (d.timezone_confirmed = e.target.checked) }),
-      h("span", {}, `All times are local times in ${d.timezone}.`)),
+      h("span", {}, `All times above are ${zoneName(d.timezone)}.`)),
     tzWarn,
     errFor(undefined, "timezone"), st.errors.filter((e) => e.entry == null && e.field === "timezone").map((e) => h("div", { class: "field-error" }, e.message)),
     dstBox, globalErr,

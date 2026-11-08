@@ -5,6 +5,14 @@
 
 const I18N = {
   en: {
+    "sky.h5": "5 AM",
+    "sky.h23": "11 PM",
+    "sky.now": "Now {time}",
+    "sky.sunrise": "Sunrise",
+    "sky.sunset": "Sunset",
+    "sky.next": "Next: {when}",
+    "chip.tray_bypass": "Tray check bypassed (testing)",
+    "camera.bypass_sub": "Testing mode: tray results come from the simulator, not the camera. Your face check is still real.",
     "welcome.title": "Welcome to Healthbox",
     "welcome.sub": "Let's set things up together. It takes about five minutes.",
     "welcome.s1": "Your account",
@@ -211,6 +219,14 @@ const I18N = {
   },
 
   es: {
+    "sky.h5": "5 a. m.",
+    "sky.h23": "11 p. m.",
+    "sky.now": "Ahora {time}",
+    "sky.sunrise": "Amanecer",
+    "sky.sunset": "Atardecer",
+    "sky.next": "Próxima: {when}",
+    "chip.tray_bypass": "Revisión de bandeja omitida (prueba)",
+    "camera.bypass_sub": "Modo de prueba: los resultados de la bandeja vienen del simulador, no de la cámara. La revisión de su cara sigue siendo real.",
     "welcome.title": "Bienvenido a Healthbox",
     "welcome.sub": "Vamos a prepararlo juntos. Tarda unos cinco minutos.",
     "welcome.s1": "Su cuenta",
@@ -417,6 +433,14 @@ const I18N = {
   },
 
   zh: {
+    "sky.h5": "早上5点",
+    "sky.h23": "晚上11点",
+    "sky.now": "现在 {time}",
+    "sky.sunrise": "日出",
+    "sky.sunset": "日落",
+    "sky.next": "下一次：{when}",
+    "chip.tray_bypass": "已跳过托盘检查（测试）",
+    "camera.bypass_sub": "测试模式：托盘结果来自模拟器，而不是摄像头。面部检查仍然是真实的。",
     "welcome.title": "欢迎使用 Healthbox",
     "welcome.sub": "我们一起完成设置，大约需要五分钟。",
     "welcome.s1": "您的账户",

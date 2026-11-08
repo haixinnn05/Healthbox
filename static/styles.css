@@ -158,7 +158,8 @@ html[data-contrast="high"] .sky { background: #fff; border-width: 0 0 2px; borde
 .arc { position: relative; height: 12.5rem; }
 .arc svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
 .arc path { fill: none; stroke: var(--sky-ink); stroke-opacity: .35; stroke-width: 2; stroke-dasharray: 6 8; vector-effect: non-scaling-stroke; }
-.arc path.walked { stroke-dasharray: none; stroke-opacity: .55; }
+.arc path.walked { stroke-dasharray: none; stroke-opacity: .6; stroke-width: 2.5; }
+.arc path.ahead { stroke-opacity: .4; }
 .arc-point { position: absolute; transform: translate(-50%, -50%); display: grid; justify-items: center; }
 .arc-dot { width: 1.25rem; height: 1.25rem; border-radius: 50%; background: var(--ground); border: 3px solid var(--sky-ink); }
 .arc-point.done .arc-dot { background: var(--sky-ink); }
@@ -450,6 +451,8 @@ body.simple .setup-door, body.simple .status-line .notice:not(.alert) { display:
 /* ------------------------------------------------------------------ responsive */
 @media (max-width: 1080px) {
   .today-grid, .steps-grid, .hist-grid, .two { grid-template-columns: minmax(0, 1fr); }
+  .top-btn .btn-text { display: none; }
+  .btn-stop { margin-left: 1rem; }
 }
 @media (max-width: 760px) {
   :root { --gutter: 16px; }
@@ -503,9 +506,6 @@ html[data-contrast="high"] .btn-quiet { text-decoration: underline; text-underli
   .btn-stop { padding: .5rem .85rem; gap: .35rem; }
   .top-btn { padding: .5rem .55rem; }
 }
-.arc-next { position: absolute; transform: translate(calc(-100% - .6rem), -50%); display: inline-flex; align-items: center; gap: .35rem;
-  padding: .3rem .7rem; border-radius: 999px; background: var(--sky-tab); color: var(--ink); font-size: var(--fs-small); font-weight: 700; white-space: nowrap; }
-.arc-next .ph { font-size: var(--icon); }
 .arc.night .arc-point.wait .arc-dot { background: transparent; }
 
 /* ------------------------------------------------------------------ account: welcome, lock */
@@ -522,3 +522,38 @@ html[data-contrast="high"] .btn-quiet { text-decoration: underline; text-underli
 .time-chip.suggested { background: var(--cloud); outline: 2px dashed var(--focus); outline-offset: -2px; }
 #door-lock { font-size: var(--fs-body); }
 @media (max-width: 760px) { .welcome-head { flex-direction: column; align-items: flex-start; } }
+
+/* ------------------------------------------------------------------ dropdowns
+   One look for every select: the field shape, a drawn chevron in ink, clear hover/focus/disabled. */
+select { appearance: none; -webkit-appearance: none; }
+.field select, select.plain-select, .row select, .stats select {
+  min-height: 48px; padding: .55rem 2.75rem .55rem .9rem; border-radius: var(--r-control); border: 2px solid var(--line-2);
+  background-color: var(--cloud); color: var(--ink); font-weight: 700; cursor: pointer; max-width: 100%;
+  background-image: linear-gradient(45deg, transparent 50%, var(--ink-2) 50%), linear-gradient(135deg, var(--ink-2) 50%, transparent 50%);
+  background-position: calc(100% - 1.3rem) 52%, calc(100% - .95rem) 52%;
+  background-size: .38rem .38rem, .38rem .38rem; background-repeat: no-repeat;
+  transition: border-color .18s var(--ease), box-shadow .18s var(--ease);
+}
+.field select:hover, select.plain-select:hover { border-color: var(--ink-3); }
+.field select:focus-visible, select.plain-select:focus-visible { border-color: var(--focus); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--focus) 25%, transparent); }
+.field select:disabled { opacity: .5; cursor: not-allowed; }
+.field select.tz-select { min-width: min(100%, 26rem); }
+.arc-now { position: absolute; transform: translate(-50%, calc(-100% - 2.4rem)); white-space: nowrap; font-size: var(--fs-small); font-weight: 700; color: var(--sky-ink); font-variant-numeric: tabular-nums; }
+
+/* Missed dose on the arc: a red disc with a white X (red is for real alerts, and a missed dose is one). */
+.arc-point.missed .arc-dot { width: 1.5rem; height: 1.5rem; background: var(--alert); border-color: var(--alert); display: grid; place-items: center; color: #fcfdff; }
+.arc-point.missed .arc-dot .ph { font-size: var(--fs-small); }
+.arc-point.missed .arc-time { color: var(--alert); }
+/* The moon on the light evening sky needs its own edge. */
+.sun.moon { border: 2px solid color-mix(in srgb, var(--sky-ink) 30%, transparent); outline-color: color-mix(in srgb, #fcfdff 50%, transparent); }
+.sky-next { display: inline-flex; align-items: center; gap: .45rem; margin-top: .75rem; padding: .35rem .85rem; border-radius: 999px;
+  background: var(--sky-tab); color: var(--ink); font-weight: 700; font-size: var(--fs-small); }
+.sky-next .ph { font-size: var(--icon); }
+.arc-now.at-end { transform: translate(calc(-100% + 1.4rem), calc(-100% - 2.4rem)); }
+.arc-now.at-start { transform: translate(-1.4rem, calc(-100% - 2.4rem)); }
+.greet .sky-next { font-size: var(--fs-body); }
+.arc .arc-now.pos-below { transform: translate(-50%, 2.4rem); }
+.arc .arc-now.pos-left { transform: translate(calc(-100% - 2.7rem), -50%); }
+.arc .arc-now.pos-right { transform: translate(2.7rem, -50%); }
+.arc .arc-now.at-end.pos-below { transform: translate(calc(-100% + 1.4rem), 2.4rem); }
+.arc .arc-now.at-start.pos-below { transform: translate(-1.4rem, 2.4rem); }

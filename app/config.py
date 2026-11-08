@@ -88,6 +88,9 @@ class Settings:
 
     # Account: how long Setup stays unlocked after the last Setup action (sliding)
     setup_unlock_minutes: int = 15
+    # Testing only: tray checks come from the simulated dispenser while the face check stays real.
+    # Refused with real hardware, where it would release pills nobody counted.
+    tray_bypass: bool = False
 
     @classmethod
     def from_env(cls, **overrides) -> "Settings":
@@ -121,11 +124,14 @@ class Settings:
             ai_request_limit=_int("AI_REQUEST_LIMIT", 100),
             require_label_photo=_str("REQUIRE_LABEL_PHOTO", "1") not in ("0", "false", "no"),
             setup_unlock_minutes=_int("SETUP_UNLOCK_MINUTES", 15),
+            tray_bypass=_str("TRAY_BYPASS", "0") in ("1", "true", "yes"),
         )
         return replace(s, **overrides) if overrides else s
 
     def validate(self) -> list[str]:
         problems = []
+        if self.tray_bypass and self.hardware_mode != "fake":
+            problems.append("TRAY_BYPASS is for testing with the simulated dispenser only; it is refused with HARDWARE_MODE=serial")
         if self.hardware_mode not in ("fake", "serial"):
             problems.append("HARDWARE_MODE must be fake or serial")
         if self.hardware_mode == "serial" and not self.serial_port:

@@ -282,8 +282,14 @@ class VisionService:
     def simulated(self) -> bool:
         return self.camera.simulated
 
+    @property
+    def tray_simulated(self) -> bool:
+        # TRAY_BYPASS (testing, fake hardware only) takes tray results from the simulator while the face check stays real.
+        return self.simulated or self.settings.tray_bypass
+
     def status(self) -> dict:
-        return {"simulated": self.simulated, "face_models": self.face.available(), "sim": dict(self.sim) if self.simulated else None}
+        return {"simulated": self.simulated, "tray_bypass": bool(self.settings.tray_bypass) and not self.simulated,
+                "face_models": self.face.available(), "sim": dict(self.sim) if self.tray_simulated else None}
 
     def set_sim(self, face: str | None = None, tray: str | None = None) -> None:
         if face in SIM_FACE:
@@ -475,9 +481,9 @@ class VisionService:
         expected = {c["class_id"]: int(expected.get(c["class_id"], 0)) for c in classes}
         rev_before = self.hardware.fields.get("rev")
         session = self.hardware.session
-        if self.simulated:
+        if self.tray_simulated:
             mono, wall = await self._sim_wait()
-            obs = Observation(kind, "UNCERTAIN", "simulated", simulated=True,
+            obs = Observation(kind, "UNCERTAIN", "simulated" if self.simulated else "tray-bypass (testing)", simulated=True,
                               frame_ids=[f"sim:{i}" for i in range(self.settings.check_frames)],
                               capture_time=wall, capture_mono=mono)
             scenario = self.sim["tray"]

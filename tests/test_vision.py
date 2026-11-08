@@ -171,3 +171,22 @@ def test_white_pill_on_dark_tray(inspector):
 def test_calibration_refuses_two_objects(inspector):
     m = inspector.measure_single(tray_image([(100, 100, BLUE), (300, 200, BLUE)]))
     assert m["status"] == "multiple_objects"
+
+
+
+def test_tray_bypass_is_refused_with_real_hardware():
+    from app.config import Settings
+    real = Settings.from_env(hardware_mode="serial", serial_port="/dev/cu.test", tray_bypass=True, genai_backend="off")
+    assert any("TRAY_BYPASS" in p for p in real.validate())
+    fake = Settings.from_env(hardware_mode="fake", tray_bypass=True, genai_backend="off")
+    assert not any("TRAY_BYPASS" in p for p in fake.validate())
+
+
+def test_tray_bypass_marks_tray_results_simulated_and_reports_itself(harness):
+    h = harness(tray_bypass=True)
+    card = h.demo_due()
+    t = h.to_dose_check(card)
+    r = h.check(t)
+    assert r["result"] == "PASS"
+    obs = h.c.get(f"/api/history/{card['dose_id']}").json()["observations"]
+    assert all(o["simulated"] for o in obs if o["kind"] in ("TRAY_EMPTY", "CLASS_COUNTS"))

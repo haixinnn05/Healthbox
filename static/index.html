@@ -21,8 +21,13 @@
       if (p.size) r.dataset.size = p.size;
       if (p.contrast) r.dataset.contrast = "high";
       if (p.lang) r.lang = p.lang === "zh" ? "zh-CN" : p.lang;
-      const hr = new Date().getHours();
-      r.dataset.sky = hr < 6 || hr >= 20 ? "night" : hr < 9 ? "dawn" : hr < 17 ? "day" : "dusk";
+      // First-paint guess only (the app computes the real sunrise and sunset right after): seasonal sun times
+      // for mid-northern latitudes, so a winter evening never flashes a daytime sky.
+      const now = new Date(), hr = now.getHours() + now.getMinutes() / 60;
+      const doy = Math.floor((now - new Date(now.getFullYear(), 0, 0)) / 864e5);
+      const season = Math.cos(2 * Math.PI * (doy - 172) / 365);
+      const rise = 6.2 - 0.9 * season, set = 18.3 + 1.9 * season;
+      r.dataset.sky = hr >= rise - 0.5 && hr < rise + 2 ? "dawn" : hr >= rise + 2 && hr < set - 2 ? "day" : "dusk";
     } catch (e) {}
   </script>
 </head>
