@@ -118,6 +118,7 @@ def build_status(services) -> dict:
         "token_classes": [{"class_id": c["class_id"], "label": c["label"], "cartridge": c["cartridge"], "color": c["color"],
                            "shape": c["hsv"].get("shape")} for c in store.token_classes()],
         "vision": services.vision.status(),
+        "laptop_sound": services.sound.status(),
         "watch": watch_status(services),
         "followups": followups(services, tz, now),
         "cartridges": cartridge_status(store, plan),

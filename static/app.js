@@ -43,8 +43,10 @@ const S = {
   busy: null, chat: [], cameraImg: null, lastDue: 0, followSeen: new Set(), fill: null,
 };
 
-const STEPS = ["PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "COLLECTION_CHECK"];
-const STEP_INDEX = { PERSON_CHECK: 0, EMPTY_TRAY_CHECK: 1, DISPENSING: 2, DOSE_CHECK: 3, RECIPIENT_RECHECK: 4, RELEASE_PENDING: 4, COLLECTION_CHECK: 5 };
+const STEPS = ["PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "HAND_CHECK", "COLLECTION_CHECK"];
+const STEP_INDEX = { PERSON_CHECK: 0, EMPTY_TRAY_CHECK: 1, DISPENSING: 2, DOSE_CHECK: 3, RECIPIENT_RECHECK: 4, RELEASE_PENDING: 4, HAND_CHECK: 5, COLLECTION_CHECK: 6 };
+// After release the person first shows the pills in their hand, then the empty tray (both in COLLECTION_CHECK).
+const stepKey = (tx) => (tx.state === "COLLECTION_CHECK" && tx.hand_done === false ? "HAND_CHECK" : tx.state);
 const ACTIVE_WF = ["PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "RELEASE_PENDING"];
 // Reason codes that mean "the dispenser itself needs checking". Everyday screens show one plain sentence.
 const DEVICE_CODES = ["DEVICE_FAULT", "STOPPED", "OUTCOME_UNCERTAIN", "RESTART_DURING_MOTION", "COMMAND_REJECTED",
@@ -360,6 +362,14 @@ function enableSound() {
   }
   rerender(true);
 }
+async function testSound() {
+  try {
+    const r = await api("/api/sound/test", {});
+    toast(r.played ? t("toast.sound_test") : t("toast.sound_test_fail"), !r.played);
+  } catch (e) {
+    toast(friendlyError(e), true);
+  }
+}
 function chime(short = false) {
   const ctx = S.audio;
   if (!ctx || ctx.state !== "running") return;
@@ -408,6 +418,7 @@ function handleSounds(s) {
   const fresh = (s.sounds || []).filter((e) => e.event_id > last);
   if (!fresh.length) return;
   try { localStorage.setItem("dg-last-sound", String(Math.max(...fresh.map((e) => e.event_id)))); } catch {}
+  if (s.laptop_sound && s.laptop_sound.enabled) return; // the laptop already chimed; don't double it
   chime();
 }
 function announce(text) {
@@ -508,7 +519,14 @@ function renderChips() {
   const sim = d.simulated ? ` (${t("chip.sim")})` : "";
   const href = PREFS.simple ? null : "#device";
   const items = [];
-  if (S.audio && S.audio.state === "running") items.push([false, "bell", t("chip.sound_on"), null, true]);
+  const ls = s.laptop_sound || {};
+  if (ls.enabled) {
+    // The server plays reminders on this laptop's speakers, so no click is needed. Warn only if it can't be heard.
+    const [alert, ic, key] = ls.muted ? [true, "speaker-slash", "chip.laptop_muted"] : ls.quiet ? [true, "speaker-low", "chip.laptop_low"]
+      : [false, "bell-ringing", "chip.laptop_on"];
+    box.append(h("button", { class: `notice ${alert ? "alert" : "calm"}`, type: "button", onclick: testSound, title: t("chip.laptop_test") },
+      icon(ic), h("span", { class: "txt" }, t(key))));
+  } else if (S.audio && S.audio.state === "running") items.push([false, "bell", t("chip.sound_on"), null, true]);
   else box.append(h("button", { class: "notice", type: "button", onclick: enableSound }, icon("bell-slash"), h("span", {}, t("chip.sound_off"))));
   if (!d.connected) items.push([true, "plugs", t("chip.dev_off") + sim, href]);
   else if (d.fault) items.push([true, "first-aid", t("chip.dev_fault") + sim, href]);
@@ -827,7 +845,7 @@ function progressPanel(s, tx) {
     h("h2", { class: "due-name" }, t("today.in_progress")),
     h("p", { class: "due-when" }, h("span", { class: "sun-chip", "aria-hidden": "true" }),
       first ? t("due.now_at", { time: fmtClock(first.due_at_utc) }) : t("pill.verifying")),
-    h("p", { class: "due-sub" }, t(`stage.${tx.state}.title`)),
+    h("p", { class: "due-sub" }, t(`stage.${stepKey(tx)}.title`)),
     doseItems(tx.doses, s),
     h("div", { class: "due-actions" }, h("button", { class: "btn btn-primary btn-big ringed", onclick: () => go("verify") }, t("today.continue"), icon("arrow-right"))));
 }
@@ -960,15 +978,16 @@ const verify = {
     const tx = s.workflow.txn;
     if (!tx) return renderNoTxn(s);
     const failed = tx.state === "FAULT" || tx.state === "UNCERTAIN";
-    const idx = STEP_INDEX[tx.state];
+    const key = stepKey(tx);
+    const idx = STEP_INDEX[key];
     const where = idx != null && !failed ? t("step.progress", { n: idx + 1, total: STEPS.length }) : null;
-    const track = h("ol", { class: `track ${failed ? "stopped" : ""}`, "aria-label": where || t(`stage.${tx.state}.title`) },
+    const track = h("ol", { class: `track ${failed ? "stopped" : ""}`, "aria-label": where || t(`stage.${key}.title`) },
       STEPS.map((st, i) => {
         const cls = failed ? "" : i < idx ? "done" : i === idx ? "current" : "";
         return h("li", { class: cls, "aria-current": cls === "current" ? "step" : null },
           h("span", { class: "dot", "aria-hidden": "true" }), h("span", { class: "name" }, t(`step.${st}`)));
       }));
-    const head = h("div", { class: "steps-head" }, h("div", {}, h("h1", {}, t(`stage.${tx.state}.title`)),
+    const head = h("div", { class: "steps-head" }, h("div", {}, h("h1", {}, t(`stage.${key}.title`)),
       where ? h("p", { class: "lede" }, where) : null));
     const cam = cameraPanel(s, tx);
     cam.append(checkedPanel(tx));
@@ -998,7 +1017,8 @@ function blockText(b) {
 function stepPanel(s, tx) {
   const wfBusy = s.workflow.busy || S.busy;
   const blocks = tx.blocks || [];
-  const say = t(`stage.${tx.state}.instr`);
+  const key = stepKey(tx);
+  const say = t(`stage.${key}.instr`);
   const panel = h("section", { class: "step-panel", "aria-labelledby": "stage-say" });
   panel.append(h("ul", { class: "step-for", "aria-label": t("rx.your_dose") }, tx.doses.map((d) => {
     const c = s.today.find((x) => x.dose_id === d.dose_id) || {};
@@ -1011,6 +1031,8 @@ function stepPanel(s, tx) {
   }
   panel.append(h("p", { class: "say", id: "stage-say" }, say));
   if (tx.state === "COLLECTION_CHECK") panel.append(watchBox(tx.watch));
+  const handObs = tx.observations.HAND_CHECK;
+  if (handObs && handObs.photo) panel.append(proofPhoto(handObs));
   const zone = h("div", { class: "step-actions" });
   const row = h("div", { class: "due-actions" });
   if (tx.state === "FAULT" || tx.state === "UNCERTAIN") {
@@ -1019,10 +1041,13 @@ function stepPanel(s, tx) {
     zone.append(h("div", { class: "waiting", role: "status" }, h("span", { class: "breath", "aria-hidden": "true" }), t("verify.wait")));
   } else if (wfBusy) {
     zone.append(h("div", { class: "waiting", role: "status" }, h("span", { class: "breath", "aria-hidden": "true" }),
-      tx.pose === "FACE" && tx.state !== "COLLECTION_CHECK" ? t("verify.checking_face") : t("verify.checking_tray")));
+      s.workflow.busy === "HAND_CHECK" ? t("verify.checking_hand")
+        : tx.pose === "FACE" && tx.state !== "COLLECTION_CHECK" ? t("verify.checking_face") : t("verify.checking_tray")));
   } else if (tx.state === "RECIPIENT_RECHECK") {
     row.append(h("button", { class: "btn btn-primary btn-big ringed", disabled: !tx.release_available, onclick: () => release(tx) }, icon("lock-key-open"), t(`stage.${tx.state}.btn`)));
     if (!tx.release_available) zone.append(h("p", { class: "muted" }, t("verify.unlock_unavailable")));
+  } else if (key === "HAND_CHECK") {
+    row.append(h("button", { class: "btn btn-primary btn-big ringed", onclick: () => runHand(tx) }, icon("hand-palm"), t("stage.HAND_CHECK.btn")));
   } else if (tx.next_action) {
     row.append(h("button", { class: "btn btn-primary btn-big ringed", onclick: () => runCheck(tx) },
       icon(tx.pose === "FACE" && tx.state !== "COLLECTION_CHECK" ? "user-focus" : "camera"), t(`stage.${tx.state}.btn`)));
@@ -1030,6 +1055,9 @@ function stepPanel(s, tx) {
   row.append(readButton(() => [say, ...blocks.map(blockText)].join(" ")));
   zone.prepend(row);
   const quiet = h("div", { class: "due-actions" });
+  if (key === "HAND_CHECK" && !wfBusy) {
+    quiet.append(h("button", { class: "btn btn-quiet", onclick: () => act("handskip", () => api("/api/doses/hand-skip", { txn_id: tx.txn_id })) }, t("hand.skip")));
+  }
   if (tx.state === "COLLECTION_CHECK" && !wfBusy) {
     quiet.append(h("button", { class: "btn btn-quiet", onclick: () => act("finish", () => api("/api/doses/finish", { txn_id: tx.txn_id })) }, t("verify.finish")));
   }
@@ -1044,6 +1072,13 @@ function stepPanel(s, tx) {
 async function release(tx) {
   const r = await act("release", () => api("/api/doses/release", { txn_id: tx.txn_id }));
   if (r) toast(t("verify.release_req"));
+}
+
+async function runHand(tx) {
+  const r = await act("hand", () => api("/api/doses/hand", { txn_id: tx.txn_id }));
+  if (!r) return;
+  if (r.result === "PASS") { toast(t("hand.passed")); announce(t("hand.passed")); }
+  else toast(blockText({ code: (r.reason_codes || [])[0], message: r.message }), true);
 }
 
 async function runCheck(tx) {
@@ -1088,8 +1123,11 @@ function simVisionControls(s, trayOnly = false) {
   const action = h("select", { class: "plain-select", "aria-label": "Simulated taking", onchange: (e) => api("/api/sim/vision", { action: e.target.value }) },
     [["taken", "Hand to mouth after release"], ["not_seen", "No hand-to-mouth movement"]]
       .map(([v, l]) => h("option", { value: v, selected: s.vision.sim.action === v }, l)));
+  const handSel = h("select", { class: "plain-select", "aria-label": "Simulated hand", onchange: (e) => api("/api/sim/vision", { hand: e.target.value }) },
+    [["shown", "Pills shown in hand"], ["wrong", "Wrong count in hand"], ["none", "No hand shown"]]
+      .map(([v, l]) => h("option", { value: v, selected: s.vision.sim.hand === v }, l)));
   return h("details", { class: "more" }, h("summary", {}, icon("caret-right"), "Camera simulator (testing)"),
-    h("div", { class: "more-body row" }, trayOnly ? null : face, tray, trayOnly ? null : action));
+    h("div", { class: "more-body row" }, trayOnly ? null : face, tray, trayOnly ? null : action, trayOnly ? null : handSel));
 }
 
 function checkedPanel(tx) {
@@ -1937,6 +1975,7 @@ function eventLine(e) {
 }
 
 const OBS_TEXT = { FACE_MATCH: "Your face", TRAY_EMPTY: "Empty tray", CLASS_COUNTS: "Dose count", COLLECTED_BY: "Who emptied the tray",
+  HAND_CHECK: "Pills in your hand",
   ACTION_OBSERVED: "Hand to mouth" };
 const RESULT_TEXT = { PASS: "passed", FAIL: "did not pass", UNCERTAIN: "unclear", NOT_OBSERVED: "not seen" };
 

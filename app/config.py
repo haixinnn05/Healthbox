@@ -75,7 +75,9 @@ class Settings:
 
     # AI
     genai_backend: str = "off"  # off | developer_api | google_cloud
-    gemini_model: str = "gemini-2.5-flash"
+    gemini_model: str = "gemini-3.5-flash"
+    # off: no thinking (fast, enough for reading a label or explaining a block); low; default: the model's own.
+    gemini_thinking: str = "off"
     gemini_api_key: str = field(default="", repr=False)
     google_cloud_project: str = ""
     google_cloud_location: str = "us-central1"
@@ -92,6 +94,10 @@ class Settings:
     # Refused with real hardware, where it would release pills nobody counted.
     tray_bypass: bool = False
 
+    # Reminder sound played by the server through this laptop's speakers (macOS), no click needed
+    laptop_sound: bool = True
+    laptop_sound_file: str = "/System/Library/Sounds/Glass.aiff"
+
     # Proof and taking observation
     evidence_keep: int = 400  # tray photos kept in data/evidence (oldest are removed first)
     watch_interval_s: float = 0.2  # how often the collection watch samples the face camera
@@ -101,6 +107,8 @@ class Settings:
     action_min_near: int = 2  # samples at the mouth needed, within action_near_window_s
     action_near_window_s: float = 2.0
     collector_min_samples: int = 3  # face samples needed to say who emptied the tray
+    collector_run_samples: int = 5  # a second face must stay this many samples in a row (about a second) to count
+    hand_check: bool = True  # after release, ask the person to show the pills in their hand before the tray check
     followup_minutes: int = 5  # ask "did you take it?" this long after release when no taking was seen
     fill_check_max_age_s: float = 900.0  # a pill check must be this recent to record a cartridge fill
 
@@ -129,7 +137,8 @@ class Settings:
             sound_max=_int("SOUND_MAX", 3),
             needs_review_minutes=_int("NEEDS_REVIEW_MINUTES", 15),
             genai_backend=_str("GENAI_BACKEND", "off").lower(),
-            gemini_model=_str("GEMINI_MODEL", "gemini-2.5-flash"),
+            gemini_model=_str("GEMINI_MODEL", "gemini-3.5-flash"),
+            gemini_thinking=_str("GEMINI_THINKING", "off").lower(),
             gemini_api_key=_str("GEMINI_API_KEY", _str("GOOGLE_API_KEY", "")),
             google_cloud_project=_str("GOOGLE_CLOUD_PROJECT", ""),
             google_cloud_location=_str("GOOGLE_CLOUD_LOCATION", "us-central1"),
@@ -138,8 +147,11 @@ class Settings:
             setup_unlock_minutes=_int("SETUP_UNLOCK_MINUTES", 0),
             tray_bypass=_str("TRAY_BYPASS", "0") in ("1", "true", "yes"),
             evidence_keep=_int("EVIDENCE_KEEP", 400),
+            laptop_sound=_str("LAPTOP_SOUND", "1") not in ("0", "false", "no"),
+            laptop_sound_file=_str("LAPTOP_SOUND_FILE", "/System/Library/Sounds/Glass.aiff"),
             action_watch_s=_float("ACTION_WATCH_S", 180.0),
             followup_minutes=_int("FOLLOWUP_MINUTES", 5),
+            hand_check=_str("HAND_CHECK", "1") not in ("0", "false", "no"),
         )
         return replace(s, **overrides) if overrides else s
 
@@ -155,6 +167,8 @@ class Settings:
             problems.append("CAMERA_MODE must be simulated, single_laptop or dual_camera")
         if self.camera_mode == "dual_camera" and not self.tray_camera_url:
             problems.append("TRAY_CAMERA_URL is required when CAMERA_MODE=dual_camera")
+        if self.gemini_thinking not in ("off", "low", "default"):
+            problems.append("GEMINI_THINKING must be off, low or default")
         if self.genai_backend not in ("off", "developer_api", "google_cloud"):
             problems.append("GENAI_BACKEND must be off, developer_api or google_cloud")
         if not 0 <= self.setup_unlock_minutes <= 1440:

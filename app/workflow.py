@@ -160,16 +160,19 @@ class WorkflowEngine:
     def _record_collector(self, conn, t: dict) -> str:
         """Who was in view while the tray was unlocked and emptied."""
         w = self.vision.watch if self.vision.watch and self.vision.watch.txn_id == t["txn_id"] else None
+        counts_runs = None
         if w is None or not w.available:
             who, code = "NOT_SEEN", "ACTION_UNAVAILABLE"
             counts, samples, sim = {}, 0, self.vision.simulated
         else:
             counts, samples, sim = dict(w.counts), w.samples, w.simulated
-            who = collector(counts, self.settings.collector_min_samples)
+            counts_runs = dict(w.runs)
+            who = collector(counts, self.settings.collector_min_samples, dict(w.runs), self.settings.collector_run_samples)
             code = {"OTHER_PERSON": "COLLECTED_BY_OTHER", "NOT_SEEN": "COLLECTOR_NOT_SEEN"}.get(who)
         result = {"RECIPIENT": "PASS", "OTHER_PERSON": "FAIL"}.get(who, "NOT_OBSERVED")
         obs = Observation("COLLECTED_BY", result, "simulated" if sim else "yunet+sface", code,
-                          message(code) if code else None, details={"collector": who, "counts": counts, "samples": samples},
+                          message(code) if code else None, details={"collector": who, "counts": counts, "samples": samples,
+                                                                    "longest_runs": counts_runs},
                           simulated=sim)
         self._save_obs(conn, t, obs)
         conn.execute(f"UPDATE doses SET collected_by=?, updated_at=? WHERE dose_id IN ({_qs(_ids(t))})",
@@ -470,6 +473,8 @@ class WorkflowEngine:
             kind = CHECK_KIND.get(t["state"])
             if not kind:
                 raise WorkflowError(409, "INVALID_TRANSITION")
+            if t["state"] == "COLLECTION_CHECK" and not self.hand_done(txn_id):
+                raise WorkflowError(409, "HAND_CHECK_FIRST")
             if self.pending:
                 raise WorkflowError(409, "PENDING_OPERATION")
             if t["state"] in ("EMPTY_TRAY_CHECK", "DOSE_CHECK"):
@@ -749,6 +754,54 @@ class WorkflowEngine:
             return {"dose_id": dose_id, "self_report": "TAKEN_UNVERIFIED"}
         return await self._idempotent(request_id, "doses/confirm", fn)
 
+    # ------------------------------------------------------------------ pills in the hand
+    def hand_done(self, txn_id: str) -> bool:
+        """The tray check waits until the pills in the hand were checked (passed) or the person said they
+        can't show them. HAND_CHECK=0 turns the step off."""
+        if not self.settings.hand_check:
+            return True
+        return bool(self.store.q1("SELECT 1 FROM observations WHERE txn_id=? AND kind='HAND_CHECK'"
+                                  " AND (result='PASS' OR reason_code='HAND_SKIPPED') LIMIT 1", (txn_id,)))
+
+    async def check_hand(self, request_id: str, txn_id: str) -> dict:
+        async def fn():
+            t = self._txn(txn_id)
+            if t["state"] != "COLLECTION_CHECK":
+                raise WorkflowError(409, "INVALID_TRANSITION")
+            expected = json.loads(t["expected_json"])
+            self.busy = "HAND_CHECK"
+            try:
+                obs = await self.vision.check_hand(expected["by_class"])
+            finally:
+                self.busy = None
+            t = self._txn(txn_id)
+            t["plan_version_id"] = expected["plan_version_id"]
+            with self.store.tx() as conn:
+                obs_id = self._save_obs(conn, t, obs)
+                if obs.result == "PASS":
+                    self._set_blocks(conn, txn_id, [])
+                else:
+                    code = obs.reason_code or "HAND_UNSTABLE"
+                    self._set_blocks(conn, txn_id, [{"code": code, "message": obs.message or message(code), "details": obs.details}])
+            return {"txn_id": txn_id, "observation_id": obs_id, "kind": "HAND_CHECK", "result": obs.result,
+                    "reason_codes": [obs.reason_code] if obs.reason_code else [], "message": obs.message, "state": t["state"],
+                    "photo": obs.details.get("photo")}
+        return await self._idempotent(request_id, "doses/hand", fn)
+
+    async def skip_hand(self, request_id: str, txn_id: str) -> dict:
+        """'I can't show them': recorded as not seen, and the tray check can go on."""
+        async def fn():
+            t = self._txn(txn_id)
+            if t["state"] != "COLLECTION_CHECK":
+                raise WorkflowError(409, "INVALID_TRANSITION")
+            t["plan_version_id"] = json.loads(t["expected_json"])["plan_version_id"]
+            obs = Observation("HAND_CHECK", "NOT_OBSERVED", "user", "HAND_SKIPPED", "You chose not to show the pills in your hand.")
+            with self.store.tx() as conn:
+                obs_id = self._save_obs(conn, t, obs)
+                self._set_blocks(conn, txn_id, [])
+            return {"txn_id": txn_id, "observation_id": obs_id, "result": "NOT_OBSERVED", "state": t["state"]}
+        return await self._idempotent(request_id, "doses/hand-skip", fn)
+
     async def followup_later(self, request_id: str, dose_id: str) -> dict:
         """'Not yet': ask again about this released dose in FOLLOWUP_MINUTES. Changes nothing else."""
         async def fn():
@@ -970,7 +1023,7 @@ class WorkflowEngine:
         classes = self.store.class_by_id()
         label, pose, action = STAGES.get(t["state"], (t["state"], None, None))
         obs = {}
-        for kind in ("FACE_MATCH", "TRAY_EMPTY", "CLASS_COUNTS", "ACTION_OBSERVED"):
+        for kind in ("FACE_MATCH", "TRAY_EMPTY", "CLASS_COUNTS", "ACTION_OBSERVED", "HAND_CHECK"):
             o = self._latest_obs(t["txn_id"], kind)
             if o:
                 age = self._obs_age_s(o)
@@ -996,6 +1049,7 @@ class WorkflowEngine:
             "observations": obs, "blocks": blocks, "release_available": release_available,
             "can_cancel": not t["dispense_reserved_at"], "created_at": t["created_at"],
             "watch": self.vision.watch_view(t["txn_id"]),
+            "hand_done": self.hand_done(t["txn_id"]) if t["state"] == "COLLECTION_CHECK" else None,
         }
         return out
 

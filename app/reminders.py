@@ -32,6 +32,7 @@ class ReminderService:
         self.settings = settings
         self.clock = store.clock
         self._task: asyncio.Task | None = None
+        self.on_alert = None  # called after each reminder sound event (the laptop chime); never affects state
 
     # -- lifecycle ------------------------------------------------------------
     async def run(self) -> None:
@@ -179,6 +180,11 @@ class ReminderService:
                 self.store.event(conn, "REMINDER_ALERT", dose_id=r["dose_id"], reminder_id=r["reminder_id"], demo=r["demo"],
                                  details={"sound": True, "repeat": count, "scheduled_at": r["next_alert_at"],
                                           "delay_ms": _delay_ms(r["next_alert_at"], now)})
+        if changed and self.on_alert:
+            try:
+                self.on_alert(r)
+            except Exception:
+                pass  # a sound problem must never change reminder state
 
     def _to_review(self, r: dict, reason: str) -> None:
         now = self.store.now()

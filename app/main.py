@@ -35,6 +35,7 @@ from . import telemetry
 from .plans import confirm_plan
 from .reasons import message
 from .reminders import ReminderService
+from .sound import LaptopSound
 from .status import build_status, dose_detail, history, recent_events
 from .store import Store, dumps
 from .timeutil import Clock, fmt_local, iso, parse
@@ -57,6 +58,7 @@ class Services:
     ai: AIService
     token: str
     account: AccountService
+    sound: LaptopSound
 
 
 # ---------------------------------------------------------------- request models
@@ -185,6 +187,7 @@ class SimVision(BaseModel):
     face: str | None = None
     tray: str | None = None
     action: str | None = None
+    hand: str | None = None
 
 
 class CartridgeCmd(Cmd):
@@ -212,8 +215,10 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         reminders = ReminderService(store, settings)
         engine = WorkflowEngine(store, reminders, hardware, vision, settings)
         ai = AIService(settings)
+        sound = LaptopSound(settings.laptop_sound, settings.laptop_sound_file)
+        reminders.on_alert = lambda r: sound.play()  # due reminders chime on this laptop, no click needed
         svc = Services(settings, store, hardware, camera, vision, reminders, engine, ai, secrets.token_urlsafe(24),
-                       AccountService(store, settings))  # in memory: a restart locks Setup
+                       AccountService(store, settings), sound)  # in memory: a restart locks Setup
         app.state.svc = svc
         await hardware.start()
         await camera.start()
@@ -463,6 +468,15 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     async def release(request: Request, body: TxnCmd):
         return ok(request, body.request_id, await S(request).engine.request_release(body.request_id, body.txn_id))
 
+    @app.post("/api/doses/hand")
+    async def hand(request: Request, body: TxnCmd):
+        """Show the pills in your hand to the camera (after release, before the tray check)."""
+        return ok(request, body.request_id, await S(request).engine.check_hand(body.request_id, body.txn_id))
+
+    @app.post("/api/doses/hand-skip")
+    async def hand_skip(request: Request, body: TxnCmd):
+        return ok(request, body.request_id, await S(request).engine.skip_hand(body.request_id, body.txn_id))
+
     @app.post("/api/doses/finish")
     async def finish(request: Request, body: TxnCmd):
         return ok(request, body.request_id, await S(request).engine.finish_without_collection(body.request_id, body.txn_id))
@@ -474,6 +488,13 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     @app.post("/api/doses/confirm")
     async def confirm(request: Request, body: DoseCmd):
         return ok(request, body.request_id, await S(request).engine.confirm_taken(body.request_id, body.dose_id))
+
+    @app.post("/api/sound/test")
+    async def sound_test(request: Request, body: Cmd):
+        """Play the reminder chime on this laptop now, so the person can hear what a reminder sounds like."""
+        svc = S(request)
+        played = svc.sound.play()
+        return ok(request, body.request_id, {"played": played, "laptop_sound": svc.sound.status()})
 
     @app.post("/api/doses/followup-later")
     async def followup_later(request: Request, body: DoseCmd):
@@ -842,7 +863,7 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         svc = S(request)
         if not svc.vision.simulated:
             raise WorkflowError(409, "INVALID_TRANSITION", "Vision simulation is off (CAMERA_MODE is not simulated).")
-        svc.vision.set_sim(body.face, body.tray, body.action)
+        svc.vision.set_sim(body.face, body.tray, body.action, body.hand)
         return ok(request, None, {"sim": svc.vision.sim})
 
     return app

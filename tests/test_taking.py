@@ -214,10 +214,25 @@ def test_tracker_without_the_hand_model_never_observes():
 
 def test_collector_rules():
     assert collector({"match": 5}, 3) == "RECIPIENT"
-    assert collector({"match": 5, "multi": 3}, 3) == "OTHER_PERSON"
-    assert collector({"match": 2, "unknown": 4}, 3) == "OTHER_PERSON"
+    assert collector({"match": 5, "multi": 6}, 3, {"multi": 6, "unknown": 0}) == "OTHER_PERSON"  # a second face stayed
+    assert collector({"match": 2, "unknown": 6}, 3, {"multi": 0, "unknown": 6}) == "OTHER_PERSON"
     assert collector({"match": 6, "unknown": 3}, 3) == "RECIPIENT"  # an odd angle now and then is not a stranger
     assert collector({"none": 20}, 3) == "NOT_SEEN"
+
+
+def test_scattered_two_face_blips_are_not_another_person():
+    """From a real dose: you matched in 170 of 183 samples; 13 scattered frames briefly found a second
+    'face' (a hand or something behind). That is detector noise, not someone else."""
+    from app.taking import Watch
+    w = Watch("t", "p", 0.0, tracker(), True, True, False, run_needed=5)
+    pattern = (["match"] * 13 + ["multi"]) * 13 + ["match"] * 1
+    for i, face in enumerate(pattern):
+        w.add(Sample(t=i * 0.2, face=face, recipient=face == "match"), "now")
+    assert w.counts["multi"] == 13 and w.runs["multi"] == 1
+    assert w.view(3)["collector_so_far"] == "RECIPIENT"
+    for i in range(5):  # a real second person stays in view
+        w.add(Sample(t=100 + i * 0.2, face="multi"), "now")
+    assert w.view(3)["collector_so_far"] == "OTHER_PERSON"
 
 
 def test_palm_decode_places_a_box_at_its_anchor():
@@ -337,3 +352,70 @@ def test_fill_is_refused_while_a_dose_is_active(harness):
     h.start(card)
     r = check_pill(h, "A", expect=409)
     assert r["reason_codes"][0] == "HARDWARE_BUSY"
+
+
+# ---------------------------------------------------------------- pills in the hand
+def released(h):
+    card = h.demo_due()
+    return card, release(h, card)
+
+
+def hand(h, t, expect=200):
+    return h.post("/api/doses/hand", {"request_id": rid(), "txn_id": t}, expect=expect)
+
+
+def test_tray_check_waits_for_the_hand_check(harness):
+    h = harness(hand_check=True)
+    card, t = released(h)
+    assert h.txn()["hand_done"] is False
+    h.sim(action="open_door")
+    h.sim(action="collect")
+    assert h.check(t, expect=409)["reason_codes"] == ["HAND_CHECK_FIRST"]
+    r = hand(h, t)
+    assert r["result"] == "PASS" and r["state"] == "COLLECTION_CHECK"
+    assert h.txn()["hand_done"] is True and h.txn()["observations"]["HAND_CHECK"]["result"] == "PASS"
+    assert h.check(t)["state"] == "COMPLETE"
+    det = detail(h, card["dose_id"])
+    assert [o["result"] for o in obs_of(det, "HAND_CHECK")] == ["PASS"]
+
+
+def test_wrong_count_in_the_hand_blocks_until_checked_again_or_skipped(harness):
+    h = harness(hand_check=True)
+    card, t = released(h)
+    h.post("/api/sim/vision", {"hand": "wrong"})
+    r = hand(h, t)
+    assert r["result"] == "FAIL" and r["reason_codes"] == ["HAND_COUNT_MISMATCH"] and "Expected 1 blue and saw 0" in r["message"]
+    assert h.txn()["blocks"][0]["code"] == "HAND_COUNT_MISMATCH" and h.txn()["hand_done"] is False
+    h.post("/api/sim/vision", {"hand": "none"})
+    assert hand(h, t)["reason_codes"] == ["NO_HAND"]
+    # "I can't show them" is recorded as not seen, and the dose can finish.
+    h.post("/api/doses/hand-skip", {"request_id": rid(), "txn_id": t})
+    assert h.txn()["hand_done"] is True and h.txn()["blocks"] == []
+    h.sim(action="open_door")
+    h.sim(action="collect")
+    assert h.check(t)["state"] == "COMPLETE"
+    skipped = [o for o in obs_of(detail(h, card["dose_id"]), "HAND_CHECK") if o["reason_code"] == "HAND_SKIPPED"]
+    assert len(skipped) == 1 and skipped[0]["result"] == "NOT_OBSERVED"
+
+
+def test_hand_check_only_after_release(harness):
+    h = harness(hand_check=True)
+    card = h.demo_due()
+    t = h.start(card)["txn_id"]
+    assert hand(h, t, expect=409)["reason_codes"] == ["INVALID_TRANSITION"]
+
+
+def test_showing_the_hand_does_not_count_as_hand_to_mouth(harness):
+    """The watch pauses during the hand check, and the hand must go down again before a movement counts."""
+    from app.taking import Watch
+    w = Watch("t", "p", 0.0, tracker(), True, True, False)
+    w.add(S(0.0, near=3.0), "now")  # hand away
+    w.paused = True
+    for i in range(5):
+        assert not w.add(S(0.2 + i * 0.2, near=0.1), "now")  # hand held up near the face while paused
+    w.paused = False
+    w.tracker.seen_away = False
+    assert not w.add(S(2.0, near=0.1), "now") and not w.add(S(2.2, near=0.1), "now")
+    w.add(S(2.4, near=3.0), "now")  # hand down
+    w.add(S(2.6, near=0.1), "now")
+    assert w.add(S(2.8, near=0.1), "now")  # now a real movement to the mouth

@@ -15,7 +15,7 @@ cd ~/doseguard
 ./run.sh                 # creates .venv on first run, keeps the Mac awake, serves http://127.0.0.1:8000
 ```
 
-Open http://127.0.0.1:8000 and click **Reminders muted · Enable sound** once. Keep the page open.
+Open http://127.0.0.1:8000 and keep the page open. When a dose is due, the server plays the chime (macOS Glass sound, twice) through the laptop's speakers, so no click is needed and it sounds even with the page in the background. The top bar shows **Reminder sound on**, or warns when the laptop is muted or below 15% volume; click it to hear a test chime (`POST /api/sound/test`). `LAPTOP_SOUND=0` turns this off (then the page asks for one click to enable its own sound), and `LAPTOP_SOUND_FILE` picks another sound.
 
 By default everything is simulated (`HARDWARE_MODE=fake`, `CAMERA_MODE=simulated`), so the whole workflow runs with
 no hardware. Simulated readings are labeled SIMULATED everywhere.
@@ -87,9 +87,17 @@ touching tokens, hidden markers, blur, and whether a hand-to-mouth movement happ
   Only the perspective-corrected tray inside the four markers is stored, never a face, in `data/evidence/`
   (gitignored); the newest `EVIDENCE_KEEP` (400) are kept. With the simulated camera the picture is drawn and
   labelled SIMULATED. `GET /api/evidence/<name>.jpg` serves them.
+- **Pills in your hand.** After release the person first shows the pills on an open palm to the face camera
+  (`POST /api/doses/hand`). The palm detector finds the hand and the pills on it are counted by colour, for this
+  dose's pill types only (other colours, orange especially, also match skin). It must pass before the tray check,
+  unless the person chooses "I can't show them" (`POST /api/doses/hand-skip`, recorded as `HAND_SKIPPED`).
+  Orange, beige and white pills are hard to see on skin, and a failed check says so. The hand-to-mouth watch is
+  paused while the hand is held up. A photo of the hand region is kept only if no face overlaps it.
+  `HAND_CHECK=0` turns the step off.
 - **Who emptied the tray.** From release until the collection check, the face camera is sampled a few times a second.
-  The result is stored as `COLLECTED_BY`: `RECIPIENT`, `OTHER_PERSON` (two faces, or a stranger more often than you)
-  or `NOT_SEEN`. Someone else being in view does not undo the dose (the pills are out); it is recorded and shown.
+  The result is stored as `COLLECTED_BY`: `RECIPIENT`, `OTHER_PERSON` (a second face, or a stranger seen more than
+  you, staying in view for 5 samples in a row, about a second; scattered single frames are detector noise) or
+  `NOT_SEEN`. Someone else being in view does not undo the dose (the pills are out); it is recorded and shown.
 - **Hand to mouth.** The same watch looks for a palm (MediaPipe palm detector from the OpenCV Zoo, run with
   `cv2.dnn`) near the enrolled person's mouth (YuNet landmarks), after the hand was first seen away from it, in at
   least 2 samples within 2 s, with the face matched. It keeps watching for `ACTION_WATCH_S` (180 s) after collection.
@@ -151,7 +159,8 @@ Copy `.env.example` to `.env`. Main switches:
 | `TRAY_BYPASS` | `1` = testing only: real face check, tray results from the simulator. Refused with `HARDWARE_MODE=serial`. |
 | `TRAY_CAMERA_URL` | ESP32-CAM snapshot URL (dual_camera) |
 | `GENAI_BACKEND` | `off`, `developer_api` (AI Studio key), `google_cloud` |
-| `GEMINI_MODEL`, `GEMINI_API_KEY` | check the model ID in AI Studio first |
+| `GEMINI_MODEL`, `GEMINI_API_KEY` | default `gemini-3.5-flash` (older 2.5 models are closed to new keys); check the ID in AI Studio |
+| `GEMINI_THINKING` | `off` (default, about 1 s per request), `low`, `default` (newer models can take a minute when they think) |
 | `SETUP_UNLOCK_MINUTES` | how long Setup stays unlocked after the last Setup change (default 15) |
 
 ### Real camera

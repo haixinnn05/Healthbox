@@ -168,12 +168,15 @@ class ActionTracker:
         return False
 
 
-def collector(counts: dict[str, int], min_samples: int) -> str:
+def collector(counts: dict[str, int], min_samples: int, runs: dict[str, int] | None = None, run_needed: int = 5) -> str:
     """Who emptied the tray, from face samples taken while the tray was unlocked.
-    OTHER_PERSON: two faces were in view, or an unknown face was seen more than the enrolled one.
+    OTHER_PERSON: a second face stayed in view (run_needed samples in a row, about a second), or an
+    unknown face stayed in view and was seen more than the enrolled one. Scattered single frames are
+    detector noise (a hand or a poster briefly read as a face), not a person.
     RECIPIENT: the enrolled face was seen enough. NOT_SEEN: neither."""
     match, unknown, multi = counts.get("match", 0), counts.get("unknown", 0), counts.get("multi", 0)
-    if multi >= min_samples or (unknown >= min_samples and unknown > match):
+    runs = runs if runs is not None else {"multi": multi, "unknown": unknown}
+    if runs.get("multi", 0) >= run_needed or (runs.get("unknown", 0) >= run_needed and unknown > match):
         return "OTHER_PERSON"
     if match >= min_samples:
         return "RECIPIENT"
@@ -190,7 +193,11 @@ class Watch:
     palms_available: bool
     simulated: bool
     counts: dict = field(default_factory=lambda: {"match": 0, "unknown": 0, "multi": 0, "none": 0})
+    runs: dict = field(default_factory=lambda: {"multi": 0, "unknown": 0})  # longest unbroken stretch of each
+    _run: tuple = ("", 0)
     samples: int = 0
+    run_needed: int = 5
+    paused: bool = False  # while the person shows the pills in their hand, the hand is not "going to the mouth"
     action_at_wall: str | None = None
     action_saved: bool = False
     last_face: str | None = None
@@ -200,6 +207,13 @@ class Watch:
         self.samples += 1
         self.counts[s.face] = self.counts.get(s.face, 0) + 1
         self.last_face = s.face
+        kind, n = self._run
+        n = n + 1 if kind == s.face else 1
+        self._run = (s.face, n)
+        if s.face in self.runs:
+            self.runs[s.face] = max(self.runs[s.face], n)
+        if self.paused:
+            return False
         hit = self.tracker.feed(s)
         if hit:
             self.action_at_wall = wall_iso
@@ -208,5 +222,5 @@ class Watch:
     def view(self, min_samples: int) -> dict:
         return {"txn_id": self.txn_id, "active": not self.stopped, "available": self.available, "palms_available": self.palms_available,
                 "simulated": self.simulated, "samples": self.samples, "counts": dict(self.counts),
-                "face_now": self.last_face, "collector_so_far": collector(self.counts, min_samples),
+                "face_now": self.last_face, "collector_so_far": collector(self.counts, min_samples, self.runs, self.run_needed),
                 "action_observed": self.tracker.observed_at is not None, "action_at": self.action_at_wall}

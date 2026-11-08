@@ -64,6 +64,11 @@ MESSAGES: dict[str, str] = {
     # Collection and taking (camera observations only; never proof of swallowing)
     "COLLECTED_BY_OTHER": "Someone other than you was in view while the tray was open.",
     "COLLECTOR_NOT_SEEN": "Your face was not in view while the tray was open, so it is not known who took the pills out.",
+    "NO_HAND": "No open hand was seen. Hold the pills flat on your open palm, facing the camera, about 30 cm away.",
+    "HAND_UNSTABLE": "The pills in your hand were not counted the same way twice. Keep your hand still and check again.",
+    "HAND_COUNT_MISMATCH": "The pills in your hand do not match your dose.",
+    "HAND_MODEL_MISSING": "The hand model is missing, so the camera can't check your hand. Run scripts/download_models.py.",
+    "HAND_CHECK_FIRST": "First show the pills in your hand to the camera, or choose I can't show them.",
     "ACTION_NOT_SEEN": "No hand-to-mouth movement was seen. If you took your medicine, press I took it.",
     "ACTION_UNAVAILABLE": "The camera could not watch for taking (simulated face, missing models or no enrolled face).",
     # Pill types and cartridges

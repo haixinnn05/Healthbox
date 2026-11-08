@@ -16,6 +16,8 @@ from . import evidence
 from .camera import CaptureManager, Frame
 from .config import Settings
 from .evidence import simulated_tray
+from .store import dumps
+import json
 from .hardware import HardwareAdapter
 from .reasons import count_mismatch_sentence, message
 from .store import Store
@@ -29,6 +31,7 @@ SFACE_FILE = "face_recognition_sface_2021dec.onnx"
 SIM_FACE = ("recipient", "unknown", "two_faces", "none")
 SIM_TRAY = ("auto", "touching", "markers_missing", "blurry")
 SIM_ACTION = ("taken", "not_seen")  # simulated hand-to-mouth movement after release
+SIM_HAND = ("shown", "none", "wrong")  # simulated "show the pills in your hand"
 
 
 @dataclass
@@ -315,6 +318,14 @@ def typical_hsv(cls: dict) -> list | None:
     return [(lo[i] + hi[i]) // 2 for i in range(3)]
 
 
+def _skin_like(hsv: list | None) -> bool:
+    """Colours a camera confuses with skin on a palm: orange, beige, pink and pale/white pills."""
+    if not hsv:
+        return False
+    h, s, v = hsv
+    return (h <= 25 or h >= 170) and s <= 190 and v >= 60 or (s < 60 and v > 150)
+
+
 def look_alike_pairs(classes: list[dict]) -> list[dict]:
     """Pill types the tray camera cannot tell apart. Counting is by colour, so if one type's
     usual colour falls inside another type's colour range, a single pill is counted as both
@@ -345,7 +356,7 @@ class VisionService:
         self.clock = clock
         self.face = FaceEngine(settings.models_dir)
         self.tray = TrayInspector(settings)
-        self.sim = {"face": "recipient", "tray": "auto", "action": "taken"}
+        self.sim = {"face": "recipient", "tray": "auto", "action": "taken", "hand": "shown"}
         self.palm = PalmDetector(settings.models_dir)
         self.watch: Watch | None = None
         self._watch_task: asyncio.Task | None = None
@@ -367,7 +378,10 @@ class VisionService:
                 "face_models": self.face.available(), "palm_model": self.palm.available(),
                 "sim": dict(self.sim) if self.tray_simulated else None}
 
-    def set_sim(self, face: str | None = None, tray: str | None = None, action: str | None = None) -> None:
+    def set_sim(self, face: str | None = None, tray: str | None = None, action: str | None = None,
+                hand: str | None = None) -> None:
+        if hand in SIM_HAND:
+            self.sim["hand"] = hand
         if face in SIM_FACE:
             self.sim["face"] = face
         if tray in SIM_TRAY:
@@ -386,7 +400,7 @@ class VisionService:
             refs = self._load_refs(person)
         available = self.simulated or refs is not None
         w = Watch(txn_id, person["person_id"] if person else None, self.clock.monotonic(), tracker, available,
-                  self.simulated or self.palm.available(), self.simulated)
+                  self.simulated or self.palm.available(), self.simulated, run_needed=s.collector_run_samples)
         self.watch = w
         if available:
             self._watch_task = asyncio.create_task(self._watch_loop(w, refs), name=f"watch-{txn_id}")
@@ -729,6 +743,156 @@ class VisionService:
         obs.tray_revision = rev_after
         obs.controller_session = self.hardware.session
         return obs
+
+    # -- pills in the hand ---------------------------------------------------------------
+    async def check_hand(self, expected: dict[str, int]) -> Observation:
+        """The person holds the pills on an open palm toward the face camera. A palm is found with the
+        palm detector, and the pills on and around it are counted by each pill type's colour. Colour on
+        skin is harder than on the tray (white or skin-coloured pills may not count), so a person who
+        can't pass it can say so; it never blocks a dose on its own."""
+        all_classes = self.store.token_classes()
+        labels = {c["class_id"]: c["label"].lower() for c in all_classes}
+        # Only this dose's pill types are counted: the tray check already showed nothing else came out, and
+        # other colour ranges (orange especially) also match skin.
+        classes = [c for c in all_classes if int(expected.get(c["class_id"], 0)) > 0]
+        expected = {c["class_id"]: int(expected[c["class_id"]]) for c in classes}
+        hard = [c["label"] for c in classes if _skin_like(typical_hsv(c))]
+        w = self.watch
+        if w:
+            w.paused = True  # a hand held up to the camera is not a hand going to the mouth
+        try:
+            if self.simulated:
+                mono, wall = await self._sim_wait()
+                obs = Observation("HAND_CHECK", "UNCERTAIN", "simulated", simulated=True, capture_time=wall, capture_mono=mono,
+                                  frame_ids=[f"sim:{i}" for i in range(self.settings.check_frames)])
+                scenario = self.sim["hand"]
+                obs.details.update({"scenario": scenario, "expected": expected})
+                if scenario == "none":
+                    obs.result, obs.reason_code = "NOT_OBSERVED", "NO_HAND"
+                else:
+                    seen = dict(expected) if scenario == "shown" else {k: max(0, v - 1) for k, v in expected.items()}
+                    self._judge_hand(obs, expected, seen, labels)
+            elif not self.palm.available():
+                obs = Observation("HAND_CHECK", "NOT_OBSERVED", "none", "HAND_MODEL_MISSING", message("HAND_MODEL_MISSING"))
+            else:
+                frames, err = await self._collect("face", lambda img: self._hand_analyze(img, classes))
+                obs = Observation("HAND_CHECK", "UNCERTAIN", "palm+hsv")
+                self._frame_meta(obs, frames)
+                obs.details["expected"] = expected
+                with_hand = [(f, r) for f, r in frames if r.get("status") == "ok"]
+                if err and not frames:
+                    obs.result, obs.reason_code = "NOT_OBSERVED", err
+                elif len(with_hand) < max(1, len(frames) // 2):
+                    obs.result, obs.reason_code = "NOT_OBSERVED", "NO_HAND"
+                else:
+                    tally: dict[str, int] = {}
+                    for _, r in with_hand:
+                        key = dumps(r["counts"])
+                        tally[key] = tally.get(key, 0) + 1
+                    best, n = max(tally.items(), key=lambda kv: kv[1])
+                    obs.details["frames_with_hand"] = len(with_hand)
+                    if n * 2 < len(with_hand):
+                        obs.result, obs.reason_code = "UNCERTAIN", "HAND_UNSTABLE"
+                    else:
+                        self._judge_hand(obs, expected, json.loads(best), labels)
+                        frame = next(f for f, r in with_hand if dumps(r["counts"]) == best)
+                        img = await asyncio.to_thread(self._hand_photo, frame.image, classes)
+                        if img is not None:
+                            self._keep_photo(obs, img)
+            if obs.reason_code and not obs.message:
+                obs.message = message(obs.reason_code)
+            if hard:
+                obs.details["hard_on_skin"] = hard
+                if obs.result != "PASS":
+                    obs.message = (obs.message or "") + (f" {', '.join(hard)} pills are hard for the camera to see on skin."
+                                                         " If it keeps failing, choose I can't show them.")
+            return obs
+        finally:
+            if w:
+                w.paused = False
+                w.tracker.seen_away = False  # the hand must go back down before a movement to the mouth counts
+                w.tracker.near.clear()
+
+    @staticmethod
+    def _judge_hand(obs: Observation, expected: dict, seen: dict, labels: dict) -> None:
+        obs.details["observed"] = seen
+        if all(int(seen.get(k, 0)) == v for k, v in expected.items()):
+            obs.result, obs.reason_code = "PASS", None
+            return
+        obs.result, obs.reason_code = "FAIL", "HAND_COUNT_MISMATCH"
+        parts = [f"Expected {v} {labels.get(k, k)} and saw {int(seen.get(k, 0))}." for k, v in expected.items()
+                 if int(seen.get(k, 0)) != v]
+        obs.message = " ".join(parts) + " Hold the pills flat on your open palm, closer to the camera, and check again."
+
+    def _hand_region(self, img):
+        """Downscale like the face detector, find the largest palm, and return (small image, region box)."""
+        import cv2
+        h, w = img.shape[:2]
+        small = cv2.resize(img, (640, int(h * 640 / w))) if w > 640 else img
+        palms = self.palm.detect(small)
+        if not palms:
+            return small, None
+        x, y, bw, bh = max(palms, key=lambda p: p["box"][2] * p["box"][3])["box"]
+        side = 1.9 * max(bw, bh)  # the palm box leaves out the fingers; pills sit on both
+        cx, cy = x + bw / 2, y + bh / 2
+        H, W = small.shape[:2]
+        x0, y0 = int(max(0, cx - side / 2)), int(max(0, cy - side / 2))
+        x1, y1 = int(min(W, cx + side / 2)), int(min(H, cy + side / 2))
+        return small, (x0, y0, x1, y1) if x1 - x0 > 20 and y1 - y0 > 20 else None
+
+    def _hand_blobs(self, roi, classes):
+        import cv2
+        hsv = cv2.cvtColor(cv2.GaussianBlur(roi, (5, 5), 0), cv2.COLOR_BGR2HSV)
+        area = roi.shape[0] * roi.shape[1]
+        counts, blobs = {}, []
+        for cls in classes:
+            contours, _ = cv2.findContours(self.tray._mask(hsv, cls["hsv"]["ranges"]), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            n = 0
+            for c in contours:
+                a = cv2.contourArea(c)
+                if 0.0015 * area <= a <= 0.06 * area:  # pill-sized next to a palm; skin patches are larger
+                    (x, y), r = cv2.minEnclosingCircle(c)
+                    blobs.append({"class_id": cls["class_id"], "x": x, "y": y, "r": r})
+                    n += 1
+            counts[cls["class_id"]] = n
+        return counts, blobs
+
+    def _hand_analyze(self, img, classes) -> dict:
+        small, box = self._hand_region(img)
+        if box is None:
+            return {"status": "no_hand"}
+        x0, y0, x1, y1 = box
+        counts, _ = self._hand_blobs(small[y0:y1, x0:x1], classes)
+        return {"status": "ok", "counts": counts}
+
+    def _hand_photo(self, img, classes):
+        """The hand region with each counted pill ringed. Not kept if a face overlaps the region."""
+        import cv2
+        from .evidence import draw_marks
+        small, box = self._hand_region(img)
+        if box is None:
+            return None
+        x0, y0, x1, y1 = box
+        with self.face._lock:
+            _, faces = self.face._detect(small)
+        for f in ([] if faces is None else faces):
+            fx, fy, fw, fh = f[:4]
+            if fx < x1 and fx + fw > x0 and fy < y1 and fy + fh > y0:
+                return None  # never keep a face
+        roi = small[y0:y1, x0:x1].copy()
+        _, blobs = self._hand_blobs(roi, classes)
+        scale = 320 / max(1, roi.shape[1])
+        out = cv2.resize(roi, (320, max(1, int(roi.shape[0] * scale))))
+        by_id = {c["class_id"]: c for c in classes}
+        seen: dict[str, int] = {}
+        marks = []
+        for b in blobs:
+            cls = by_id.get(b["class_id"], {})
+            seen[b["class_id"]] = seen.get(b["class_id"], 0) + 1
+            marks.append({"x": b["x"] * scale, "y": b["y"] * scale, "r": b["r"] * scale, "color": cls.get("color"),
+                          "tag": f"{cls.get('cartridge') or '?'}{seen[b['class_id']]}"})
+        draw_marks(out, marks)
+        return out
 
     def _keep_photo(self, obs: Observation, img) -> None:
         rel = evidence.save(self.settings.data_dir, img, self.settings.evidence_keep)

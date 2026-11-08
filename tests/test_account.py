@@ -452,5 +452,6 @@ def test_every_post_route_is_classified(harness):
         "/api/reminders/snooze", "/api/reminders/ack", "/api/reminders/close",
         "/api/doses/self-report", "/api/doses/start", "/api/doses/request", "/api/doses/check",
         "/api/doses/release", "/api/doses/finish", "/api/doses/cancel", "/api/doses/confirm",
-        "/api/doses/followup-later", "/api/device/stop", "/api/assistant", "/api/sim/hardware", "/api/sim/vision"}
+        "/api/doses/hand", "/api/doses/hand-skip",
+        "/api/doses/followup-later", "/api/sound/test", "/api/device/stop", "/api/assistant", "/api/sim/hardware", "/api/sim/vision"}
     assert not is_setup_route("GET", "/api/labels/abc/image")

@@ -111,6 +111,12 @@ class AIService:
             raise AIError("AI_BUSY", "Another AI request is in progress.")
         from google.genai import types
         cfg = {"max_output_tokens": max_tokens, "temperature": 0.2}
+        # Newer models think before answering by default, which can take a minute; labels and short
+        # explanations don't need it (GEMINI_THINKING).
+        if self.settings.gemini_thinking == "off":
+            cfg["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        elif self.settings.gemini_thinking == "low":
+            cfg["thinking_config"] = types.ThinkingConfig(thinking_level="low")
         if system:
             cfg["system_instruction"] = system
         if schema is not None:
