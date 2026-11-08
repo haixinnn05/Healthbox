@@ -1503,6 +1503,8 @@ function renderWelcome() {
   const last = h("input", { id: "acct-last", maxlength: 30, autocomplete: "family-name" });
   const pw = h("input", { id: "acct-pw", type: "password", maxlength: 128, autocomplete: "new-password" });
   const pw2 = h("input", { id: "acct-pw2", type: "password", maxlength: 128, autocomplete: "new-password" });
+  const needsCode = !!(S.status && S.status.account && S.status.account.needs_code);
+  const code = needsCode ? h("input", { id: "acct-code", maxlength: 64, autocomplete: "off", autocapitalize: "off", spellcheck: "false" }) : null;
   const err = h("p", { class: "field-error", role: "alert" });
   async function create(ev) {
     ev.preventDefault();
@@ -1514,7 +1516,7 @@ function renderWelcome() {
     if (pw.value !== pw2.value) return (err.textContent = t("account.mismatch"));
     try {
       S.busy = "account";
-      const made = await api("/api/account/create", { first_name: n, last_name: l, password: pw.value }, { noRetry: true });
+      const made = await api("/api/account/create", { first_name: n, last_name: l, password: pw.value, setup_code: code ? code.value : "" }, { noRetry: true });
       setOnboarding(true);
       S.setup = null;
       S.prefillName = n;
@@ -1539,6 +1541,8 @@ function renderWelcome() {
       h("label", { class: "field", for: "acct-pw" }, t("account.password"), pw),
       h("label", { class: "field", for: "acct-pw2" }, t("account.password2"), pw2),
       h("p", { class: "muted" }, t("account.password_help")),
+      code ? h("label", { class: "field", for: "acct-code" }, t("account.setup_code"), code) : null,
+      code ? h("p", { class: "muted" }, t("account.setup_code_help")) : null,
       err,
       h("div", { class: "row" }, h("button", { class: "btn btn-primary btn-big", type: "submit" }, t("account.create"), icon("arrow-right"))))));
   name.focus();
@@ -1572,14 +1576,14 @@ function unlockPanel(autofocus = true) {
   const first = a.first_name || a.name || "";
   return h("section", { class: "panel unlock" },
     h("div", { class: "status-big" }, h("span", { class: "orb", "aria-hidden": "true" }, icon("user-circle")),
-      h("div", {}, h("h2", {}, t("lock.title", { name: first })), h("p", {}, t("lock.sub")))),
+      h("div", {}, h("h2", {}, first ? t("lock.title", { name: first }) : t("lock.title_anon")), h("p", {}, t("lock.sub")))),
     h("form", { class: "unlock-form", onsubmit: unlock },
       h("p", { class: "strong" }, a.name || ""),
       h("label", { class: "field", for: "unlock-pw" }, t("account.password"), pw),
       err,
       h("div", { class: "row" }, h("button", { class: "btn btn-primary", type: "submit" }, icon("sign-in"), t("lock.unlock")))),
     h("p", { class: "muted small", style: "margin-top:1rem" }, t("lock.forgot")),
-    h("details", { class: "more" }, h("summary", {}, icon("caret-right"), t("lock.not_me", { name: first })),
+    !first ? null : h("details", { class: "more" }, h("summary", {}, icon("caret-right"), t("lock.not_me", { name: first })),
       h("div", { class: "more-body" }, h("p", { class: "muted" }, t("lock.not_me_body", { name: first })))));
 }
 

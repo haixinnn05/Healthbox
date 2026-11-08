@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
@@ -95,12 +96,11 @@ class AIService:
         except Exception as exc:
             self.error = f"Could not create the Gemini client: {type(exc).__name__}"
             return
-        try:
-            await self._generate(["Reply with the single word OK."], None, max_tokens=5)
-            self.ready = True
-            self.error = None
-        except AIError as exc:
-            self.error = f"Readiness check failed: {exc.message}"
+        # No test request here: the free tier allows few requests a day, and every restart would spend one.
+        self.ready = True
+        self.error = None
+
+    rate_limit_waits = (2.0, 5.0)  # seconds before each retry after a 429
 
     async def _generate(self, contents, schema, *, system: str | None = None, max_tokens: int = 400):
         if self.client is None:
@@ -124,20 +124,35 @@ class AIService:
             cfg["response_schema"] = schema
         async with self._sem:
             self.requests_used += 1
-            try:
-                resp = await asyncio.wait_for(
-                    self.client.aio.models.generate_content(model=self.model, contents=contents,
-                                                            config=types.GenerateContentConfig(**cfg)),
-                    timeout=self.settings.ai_timeout_s,
-                )
-            except asyncio.TimeoutError:
-                # Not resent anywhere: the first request may have been processed and billed.
-                self.last_outcome = "timeout"
-                raise AIError("AI_TIMEOUT", "Gemini did not answer in time.")
-            except Exception as exc:
-                self.last_outcome = f"error:{type(exc).__name__}"
-                log.warning("Gemini request failed: %s", exc)
-                raise AIError("AI_ERROR", f"Gemini request failed ({type(exc).__name__}).")
+            waits = iter(self.rate_limit_waits)
+            while True:
+                try:
+                    resp = await asyncio.wait_for(
+                        self.client.aio.models.generate_content(model=self.model, contents=contents,
+                                                                config=types.GenerateContentConfig(**cfg)),
+                        timeout=self.settings.ai_timeout_s,
+                    )
+                    break
+                except asyncio.TimeoutError:
+                    # Not resent anywhere: the first request may have been processed and billed.
+                    self.last_outcome = "timeout"
+                    raise AIError("AI_TIMEOUT", "Gemini did not answer in time.")
+                except Exception as exc:
+                    self.last_outcome = f"error:{type(exc).__name__}"
+                    log.warning("Gemini request failed: %s", exc)
+                    if getattr(exc, "code", None) != 429:
+                        raise AIError("AI_ERROR", f"Gemini request failed ({type(exc).__name__}).")
+                    # 429: Gemini refused without doing the work, so trying again is safe, but only worth it
+                    # when the limit clears in seconds. A daily limit says how long it has left.
+                    found = re.search(r"retryDelay'?\"?:\s*'?\"?(\d+)", str(exc))
+                    delay = int(found.group(1)) if found else None
+                    if delay is not None and delay > 3600:
+                        hours = max(1, round(delay / 3600))
+                        raise AIError("AI_DAILY_LIMIT", f"Gemini's free daily limit is used up. It resets in about {hours} hours.")
+                    wait = None if delay is not None and delay > 8 else next(waits, None)
+                    if wait is None:
+                        raise AIError("AI_RATE_LIMIT", "Gemini is at its free limit for the moment.")
+                    await asyncio.sleep(wait)
         usage = getattr(resp, "usage_metadata", None)
         if usage is not None:
             self.tokens["input"] += getattr(usage, "prompt_token_count", 0) or 0

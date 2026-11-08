@@ -69,6 +69,7 @@ MESSAGES: dict[str, str] = {
     "HAND_UNSTABLE": "The pills in your hand were not counted the same way twice. Keep your hand still and check again.",
     "HAND_COUNT_MISMATCH": "The pills in your hand do not match your dose.",
     "HAND_MODEL_MISSING": "The hand model is missing, so the camera can't check your hand. Run scripts/download_models.py.",
+    "SETUP_CODE": "That setup code is wrong. It is shown in the terminal on the laptop with the pill box.",
     "PUBLIC_DEMO": "This is a shared public demo, so this can't be changed here.",
     "HAND_CHECK_FIRST": "First show the pills in your hand to the camera, or choose I can't show them.",
     "ACTION_NOT_SEEN": "No hand-to-mouth movement was seen. If you took your medicine, press I took it.",

@@ -25,7 +25,8 @@ from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import evidence
-from .account import AccountService, is_setup_route, needs_sign_in
+from .account import (REMOTE_COOKIE, REMOTE_SESSION, AccountService, RemoteScope, is_setup_route, needs_sign_in,
+                      remote_open, remote_scope)
 from .ai import AIError, AIService
 from .camera import CaptureManager
 from .config import ROOT, Settings
@@ -113,6 +114,7 @@ class PlanConfirm(Cmd):
 # Account fields are plain strings checked in app/account.py, so a validation error can never echo
 # a password back (FastAPI's default 422 body includes the input).
 class AccountCreate(Cmd):
+    setup_code: str = Field(default="", max_length=64)
     name: str = ""
     first_name: str = ""
     last_name: str = ""
@@ -266,10 +268,21 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     hosts = ["127.0.0.1", "localhost", "[::1]", "::1"] + (["testserver"] if testing else [])
     if settings.public_demo:
         hosts.append(settings.public_host)
+    if settings.remote_host:
+        hosts.append(settings.remote_host)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
     allowed_origins = {f"http://{h}:{settings.port}" for h in ("127.0.0.1", "localhost", "[::1]")}
     if settings.public_demo:
         allowed_origins.add(f"https://{settings.public_host}")
+    if settings.remote_host:
+        allowed_origins.add(f"https://{settings.remote_host}")
+
+    def from_link(request: Request) -> bool:
+        """Came through the public tunnel, not from the laptop's own browser."""
+        if not settings.remote_host:
+            return False
+        host = request.headers.get("host", "").split(":")[0].lower()
+        return host == settings.remote_host.lower() or "cf-connecting-ip" in request.headers
 
     def harden(resp: Response) -> Response:
         resp.headers["X-Content-Type-Options"] = "nosniff"
@@ -280,6 +293,14 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     async def guard_commands(request: Request, call_next):
         setup = False
         path = request.scope["path"]
+        scope = None
+        if from_link(request):
+            scope = RemoteScope(request.cookies.get(REMOTE_COOKIE))
+            remote_scope.set(scope)
+            svc_r: Services = request.app.state.svc
+            if svc_r.account.remote_anonymous() and not remote_open(request.method, path):
+                return harden(JSONResponse({"request_id": None, "state_version": svc_r.store.version, "result": "rejected",
+                                            "reason_codes": ["SIGNED_OUT"], "message": message("SIGNED_OUT")}, 423))
         if needs_sign_in(request.method, path) and request.app.state.svc.account.signed_out():
             # Signed out: medicines, records, photos and Ask stay hidden. A due dose never needs this.
             svc0: Services = request.app.state.svc
@@ -304,6 +325,11 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         resp = await call_next(request)
         if setup and resp.status_code < 400:
             request.app.state.svc.account.touch()  # sliding unlock window
+        if scope and scope.issued:
+            resp.set_cookie(REMOTE_COOKIE, scope.issued, max_age=int(REMOTE_SESSION.total_seconds()), httponly=True,
+                            secure=True, samesite="strict", path="/")
+        elif scope and scope.ended:
+            resp.delete_cookie(REMOTE_COOKIE, httponly=True, secure=True, samesite="strict", path="/")
         return harden(resp)
 
     @app.exception_handler(RequestValidationError)
@@ -450,6 +476,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
 
     @app.post("/api/account/create")
     async def account_create(request: Request, body: AccountCreate):
+        if from_link(request) and not secrets.compare_digest(body.setup_code.strip().encode(), settings.remote_setup_code.encode()):
+            raise WorkflowError(403, "SETUP_CODE")
         return ok(request, body.request_id, await S(request).account.create(body.request_id, body.name, body.password,
                                                                        body.first_name, body.last_name))
 
@@ -740,7 +768,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
                 fields = await svc.ai.extract_label(data, svc.settings.max_tokens_per_channel, body.container)
                 ai_status = "ok"
             except AIError as exc:
-                ai_status, note = exc.code, exc.message + " Type the fields from the label photos yourself."
+                ai_status, note = exc.code, exc.message + (" Try again in a minute, or type the fields from the label photos yourself."
+                                                           if exc.code == "AI_RATE_LIMIT" else " Type the fields from the label photos yourself.")
         else:
             note = "AI is off, so fields were not read automatically. Type them from the label photos."
         with svc.store.tx() as conn:

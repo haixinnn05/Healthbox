@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import secrets
 import unicodedata
+from contextvars import ContextVar
 from datetime import datetime, timedelta
 
 from .errors import WorkflowError
@@ -43,6 +44,30 @@ def needs_sign_in(method: str, path: str) -> bool:
     if method == "POST":
         return path in SIGNED_IN_POSTS
     return method == "GET" and path.startswith(SIGNED_IN_READS)
+
+# Over the public link, sign-in belongs to one browser (a cookie) and nothing is open without it. The laptop
+# itself keeps the rules above. Each request from the link runs with a RemoteScope; local requests have none.
+REMOTE_COOKIE = "healthbox_session"
+REMOTE_SESSION = timedelta(hours=12)
+REMOTE_OPEN_POSTS = frozenset({"/api/account/create", "/api/account/unlock"})
+
+
+class RemoteScope:
+    __slots__ = ("token", "issued", "ended")
+
+    def __init__(self, token: str | None):
+        self.token, self.issued, self.ended = token, None, False
+
+
+remote_scope: ContextVar[RemoteScope | None] = ContextVar("healthbox_remote_scope", default=None)
+
+
+def remote_open(method: str, path: str) -> bool:
+    """What someone on the link can reach before signing in: the page, a stripped status, and the sign-in itself."""
+    if method == "POST":
+        return path in REMOTE_OPEN_POSTS
+    return not path.startswith("/api/") or path in ("/api/status", "/api/account")
+
 
 NAME_MAX = 60
 PASSWORD_MIN, PASSWORD_MAX = 8, 128
@@ -93,11 +118,38 @@ class AccountService:
         self.store = store
         self.clock = store.clock
         self.unlock_for = timedelta(minutes=settings.setup_unlock_minutes) if settings.setup_unlock_minutes > 0 else None
-        self._signed_in = False
+        self._local_signed_in = False  # the laptop itself
+        self._sessions: dict[str, datetime] = {}  # browsers on the public link: token -> expiry
         self._unlocked_until: datetime | None = None  # None while signed in = until Sign out
         self._locked_out_until: datetime | None = None
         self._failures: list[datetime] = []
         self._lock = asyncio.Lock()  # one password check at a time
+
+    @property
+    def _signed_in(self) -> bool:
+        scope = remote_scope.get()
+        if scope is None:
+            return self._local_signed_in
+        expires = self._sessions.get(scope.token or "")
+        return expires is not None and self.clock.now() < expires
+
+    @_signed_in.setter
+    def _signed_in(self, on: bool) -> None:
+        scope = remote_scope.get()
+        if scope is None:
+            self._local_signed_in = bool(on)
+            return
+        self._sessions.pop(scope.token or "", None)
+        scope.token, scope.issued, scope.ended = None, None, not on
+        if on:
+            now = self.clock.now()
+            self._sessions = {t: e for t, e in self._sessions.items() if now < e}
+            scope.token = scope.issued = secrets.token_urlsafe(32)
+            self._sessions[scope.token] = now + REMOTE_SESSION
+
+    def remote_anonymous(self) -> bool:
+        """This request came over the public link and its browser is not signed in."""
+        return remote_scope.get() is not None and not self._signed_in
 
     def keep_signed_in(self) -> None:
         """Public demo only: the built-in guest is always signed in."""
@@ -275,6 +327,8 @@ class AccountService:
                 conn.execute("DELETE FROM account WHERE account_id=1")
                 self.store.event(conn, "ACCOUNT_HANDED_OVER", details={"from": name}, demo=0)
             self._signed_in = False
+            self._local_signed_in = False
+            self._sessions.clear()
             self._unlocked_until = None
             self._failures.clear()
             if after:

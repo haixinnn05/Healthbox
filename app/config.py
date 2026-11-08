@@ -38,6 +38,8 @@ class Settings:
     public_demo: bool = False  # hosted public demo: simulated hardware only, one built-in guest, wiped regularly
     public_host: str = ""  # the demo's public domain, e.g. healthbox.up.railway.app
     demo_reset_minutes: int = 30
+    remote_host: str = ""  # public link to the real box, e.g. abc.trycloudflare.com; the server stays on loopback
+    remote_setup_code: str = ""  # needed to create the account over the link; shown only in the laptop's terminal
     data_dir: Path = ROOT / "data"
     db_path: Path = ROOT / "data" / "doseguard.db"
     models_dir: Path = ROOT / "models"
@@ -134,6 +136,8 @@ class Settings:
             public_demo=public,
             public_host=_str("PUBLIC_HOST", _str("RAILWAY_PUBLIC_DOMAIN", "")),
             demo_reset_minutes=_int("DEMO_RESET_MINUTES", 30),
+            remote_host=_str("REMOTE_HOST", ""),
+            remote_setup_code=_str("REMOTE_SETUP_CODE", ""),
             data_dir=data_dir,
             db_path=Path(_str("DB_PATH", str(data_dir / "doseguard.db"))),
             timezone=_str("TIMEZONE", "America/New_York"),
@@ -191,6 +195,10 @@ class Settings:
             problems.append("GENAI_BACKEND must be off, developer_api or google_cloud")
         if not 0 <= self.setup_unlock_minutes <= 1440:
             problems.append("SETUP_UNLOCK_MINUTES must be 0 (stay signed in until Sign out) to 1440")
+        if self.remote_host and self.public_demo:
+            problems.append("REMOTE_HOST (the real box) and PUBLIC_DEMO (the simulated site) can't be used together")
+        if self.remote_host and len(self.remote_setup_code) < 8:
+            problems.append("REMOTE_HOST needs REMOTE_SETUP_CODE, at least 8 characters")
         if self.public_demo:
             if self.hardware_mode != "fake" or self.camera_mode != "simulated":
                 problems.append("PUBLIC_DEMO runs only with the simulated dispenser and cameras")

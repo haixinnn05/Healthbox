@@ -89,3 +89,102 @@ def test_bottle_photos_are_sent_together():
     contents = captured["contents"]
     assert len(contents) == 4 and "round bottle" in contents[-1]  # 3 photos + one instruction, one request
     assert models.calls == 1
+
+
+class RateLimited(Exception):
+    code = 429
+
+
+async def _rate_limited_then(ai_service, fails, make_ok=None):
+    calls = []
+
+    async def generate_content(**kw):
+        calls.append(kw)
+        if len(calls) <= fails:
+            raise RateLimited("429 RESOURCE_EXHAUSTED")
+        return SimpleNamespace(text="OK", usage_metadata=None)
+
+    ai_service.client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)))
+    ai_service.rate_limit_waits = (0, 0)
+    return calls
+
+
+def _service():
+    from app.ai import AIService
+    from app.config import Settings
+    return AIService(Settings.from_env(genai_backend="developer_api"))
+
+
+def test_rate_limit_is_retried_and_counts_once():
+    import asyncio
+    ai = _service()
+
+    async def run():
+        calls = await _rate_limited_then(ai, 2)
+        await ai._generate(["x"], None)
+        return calls
+    calls = asyncio.run(run())
+    assert len(calls) == 3 and ai.requests_used == 1 and ai.last_outcome == "ok"
+
+
+def test_rate_limit_that_does_not_clear_says_so():
+    import asyncio
+
+    import pytest
+
+    from app.ai import AIError
+    ai = _service()
+
+    async def run():
+        await _rate_limited_then(ai, 9)
+        await ai._generate(["x"], None)
+    with pytest.raises(AIError) as e:
+        asyncio.run(run())
+    assert e.value.code == "AI_RATE_LIMIT" and "free limit" in e.value.message
+
+
+def test_other_client_errors_are_not_retried():
+    import asyncio
+
+    import pytest
+
+    from app.ai import AIError
+    ai = _service()
+    calls = []
+
+    class Refused(Exception):
+        code = 403
+
+    async def generate_content(**kw):
+        calls.append(kw)
+        raise Refused("403")
+    ai.client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)))
+    ai.rate_limit_waits = (0, 0)
+    with pytest.raises(AIError):
+        asyncio.run(ai._generate(["x"], None))
+    assert len(calls) == 1
+
+
+def test_daily_limit_is_not_retried_and_says_when_it_resets():
+    import asyncio
+
+    import pytest
+
+    from app.ai import AIError
+    ai = _service()
+    calls = []
+
+    class Daily(Exception):
+        code = 429
+
+        def __str__(self):
+            return "429 RESOURCE_EXHAUSTED {'@type': 'RetryInfo', 'retryDelay': '79831s'}"
+
+    async def generate_content(**kw):
+        calls.append(kw)
+        raise Daily()
+    ai.client = SimpleNamespace(aio=SimpleNamespace(models=SimpleNamespace(generate_content=generate_content)))
+    ai.rate_limit_waits = (0, 0)
+    with pytest.raises(AIError) as e:
+        asyncio.run(ai._generate(["x"], None))
+    assert len(calls) == 1 and e.value.code == "AI_DAILY_LIMIT" and "22 hours" in e.value.message

@@ -133,11 +133,23 @@ def build_status(services) -> dict:
                    "snooze_minutes": s.snooze_minutes, "followup_minutes": s.followup_minutes,
                    "hand_check": services.engine.hand_check_on, "sound_max": s.sound_max, "needs_review_minutes": s.needs_review_minutes},
     }
+    if services.account.remote_anonymous():
+        return link_visitor_view(snap)
     return signed_out_view(snap) if services.account.signed_out() else snap
 
 
 DOSE_ONLY_STATES = ("PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "RELEASE_PENDING",
                     "RELEASED", "FAULT", "UNCERTAIN")
+
+
+def link_visitor_view(snap: dict) -> dict:
+    """Someone on the public link who hasn't signed in sees only that a box exists: no doses, names or steps."""
+    exists = snap["account"]["exists"]
+    snap = signed_out_view(snap)
+    snap.update(today=[], followups=[], watch=None, look_alike=[], signed_out=exists,
+                workflow={**snap["workflow"], "txn": None, "busy": None, "pending_operation": None},
+                account={**snap["account"], "name": None, "first_name": None, "needs_code": not exists})
+    return snap
 
 
 def signed_out_view(snap: dict) -> dict:
