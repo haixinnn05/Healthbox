@@ -12,7 +12,7 @@ MESSAGES: dict[str, str] = {
     "NOT_ENROLLED": "No recipient is enrolled for this plan. Enroll in Setup first.",
     "FACE_UNSTABLE": "The face match was not stable across frames. Hold still and try again.",
     # Tray
-    "TRAY_MARKERS_MISSING": "Tray markers missing. The camera must see all four corner markers.",
+    "TRAY_MARKERS_MISSING": "The camera can't see the whole tray. Keep all of it in view, with nothing covering it.",
     "OBJECTS_TOUCHING": "Objects touching or stacked. Counts are uncertain.",
     "IMAGE_BLURRY": "The tray image is blurry. Hold the camera steady.",
     "OBJECT_FRAGMENT": "Something smaller than a whole pill is in the tray (broken or partly hidden). Counts are uncertain.",

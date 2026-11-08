@@ -42,7 +42,7 @@ const char* HOSTNAME = "doseguard-tray";      // http://doseguard-tray.local/sna
 const framesize_t FRAME_SIZE = FRAMESIZE_VGA; // 640x480: enough for the corner markers and pill outlines
 const int JPEG_QUALITY = 12;                  // 10-63, lower = better quality and bigger files
 const int MAX_STALE_DISCARDS = 4;             // buffered frames thrown away per request at most
-const char* FW_VERSION = "doseguard-tray-0.8";
+const char* FW_VERSION = "doseguard-tray-0.11";
 // Inside the closed box it is dark. The board's white LED (GPIO 4) gives a steady, dim light so every
 // frame is exposed the same way (counting is by colour). 0 = off, 255 = full (too bright and hot).
 const int FLASH_LED_PIN = 4;
@@ -203,13 +203,16 @@ static bool startCamera() {
   s->set_lenc(s, 1);     // even out the dark corners of the wide lens
   if (s->id.PID == OV3660_PID) {  // this board's sensor: Espressif's own tuning for it
     s->set_vflip(s, 1);
-    s->set_brightness(s, 2);
+    s->set_brightness(s, 0);
+    s->set_contrast(s, 1);
     s->set_saturation(s, -2);
   }
   // Let auto exposure and white balance settle before anyone asks for a frame.
   for (int i = 0; i < 8; i++) { camera_fb_t* fb = esp_camera_fb_get(); if (fb) esp_camera_fb_return(fb); delay(60); }
   return true;
 }
+
+static int lastWifiReason = 0;
 
 static void startServer() {
   httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
@@ -250,11 +253,26 @@ void setup() {
   WiFi.setHostname(HOSTNAME);
   WiFi.setSleep(false);  // power save adds latency to every snapshot
   WiFi.setAutoReconnect(true);
+  WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) { lastWifiReason = info.wifi_sta_disconnected.reason; },
+               ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   Serial.print("Joining WiFi");
   for (int i = 0; i < 60 && WiFi.status() != WL_CONNECTED; i++) { delay(500); Serial.print("."); }
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nWiFi failed. Check wifi_secrets.h. Restarting.");
+    // 201 = network not found, 15/202/204 = password or handshake rejected, 2/8 = dropped by the hotspot
+    Serial.printf("\nWiFi failed (status %d, reason %d). Scanning...\n", (int)WiFi.status(), lastWifiReason);
+    WiFi.disconnect();
+    delay(200);
+    int seen = WiFi.scanNetworks();
+    bool mine = false;
+    for (int i = 0; i < seen; i++) {
+      if (WiFi.SSID(i) == WIFI_SSID) {
+        mine = true;
+        Serial.printf("Hotspot visible: channel %d, signal %d dBm\n", (int)WiFi.channel(i), (int)WiFi.RSSI(i));
+      }
+    }
+    if (!mine) Serial.printf("Hotspot NOT visible (%d other networks seen, 2.4 GHz only)\n", seen);
+    Serial.println("WiFi failed. Check wifi_secrets.h. Restarting.");
     delay(2000);
     ESP.restart();
   }

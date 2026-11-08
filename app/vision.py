@@ -137,6 +137,8 @@ class TrayInspector:
         With geometry=True, info["_geom"] = (corner points in the image, transform) for overlays."""
         import cv2
         import numpy as np
+        if marker_ids == TRAY_IDS and self.settings.tray_vision == "outline":
+            return self._warp_by_colour(img, geometry)
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         detector = cv2.aruco.ArucoDetector(cv2.aruco.getPredefinedDictionary(cv2.aruco.DICT_4X4_50),
                                            cv2.aruco.DetectorParameters())
@@ -161,6 +163,150 @@ class TrayInspector:
         if geometry:
             info["_geom"] = (src, M)
         return warped[BORDER:WARP_H - BORDER, BORDER:WARP_W - BORDER], info
+
+    # -- tray by colour, objects by outline -------------------------------------------
+    def _find_tray_quad(self, img):
+        """The four corners of the tray, found as the large single-coloured shape in the middle of the
+        view. None unless the whole tray is in view with its edges showing against what surrounds it."""
+        import cv2
+        import numpy as np
+        h, w = img.shape[:2]
+        lab = cv2.cvtColor(cv2.GaussianBlur(img, (7, 7), 0), cv2.COLOR_BGR2LAB).astype(np.int16)
+        centre = lab[int(h * 0.3):int(h * 0.7), int(w * 0.3):int(w * 0.7)].reshape(-1, 3)
+        l0, a0, b0 = (float(np.median(centre[:, i])) for i in range(3))
+        near = (np.abs(lab[..., 0] - l0) < 45) & (np.abs(lab[..., 1] - a0) < 14) & (np.abs(lab[..., 2] - b0) < 14)
+        mask = cv2.morphologyEx(near.astype(np.uint8) * 255, cv2.MORPH_OPEN, np.ones((7, 7), np.uint8))
+        n, labels, stats, _ = cv2.connectedComponentsWithStats(mask)
+        if n < 2:
+            return None
+        best = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+        contours, _ = cv2.findContours((labels == best).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        hull = cv2.convexHull(max(contours, key=cv2.contourArea))
+        area = float(cv2.contourArea(hull))
+        x, y, bw, bh = cv2.boundingRect(hull)
+        if not 0.15 * w * h <= area <= 0.95 * w * h or x <= 2 or y <= 2 or x + bw >= w - 2 or y + bh >= h - 2:
+            return None  # too small, or running off the edge of the view: not the whole tray
+        (_, (rw, rh), _) = rect = cv2.minAreaRect(hull)
+        if area / max(1.0, rw * rh) < 0.85:
+            return None  # not rectangular
+        filled = np.zeros((h, w), np.uint8)
+        cv2.drawContours(filled, [hull], -1, 255, -1)
+        ring = cv2.dilate(filled, np.ones((25, 25), np.uint8)) & ~cv2.dilate(filled, np.ones((9, 9), np.uint8))
+        outside = lab[ring > 0]
+        if not len(outside) or max(abs(float(np.median(outside[:, 0])) - l0), abs(float(np.median(outside[:, 1])) - a0),
+                                   abs(float(np.median(outside[:, 2])) - b0)) < 18:
+            return None  # the surroundings look the same: a plain wall or table, not a tray
+        approx = cv2.approxPolyDP(hull, 0.03 * cv2.arcLength(hull, True), True)
+        pts = approx.reshape(-1, 2).astype("float32") if len(approx) == 4 else cv2.boxPoints(rect).astype("float32")
+        s, d = pts.sum(axis=1), np.diff(pts, axis=1).ravel()
+        quad = np.array([pts[np.argmin(s)], pts[np.argmin(d)], pts[np.argmax(s)], pts[np.argmax(d)]], dtype="float32")
+        if np.linalg.norm(quad[1] - quad[0]) < np.linalg.norm(quad[3] - quad[0]):
+            quad = np.roll(quad, 1, axis=0)  # keep the long side across
+        return quad
+
+    def _warp_by_colour(self, img, geometry: bool):
+        import cv2
+        import numpy as np
+        src = self._find_tray_quad(img)
+        if src is None:
+            return None, {"status": "markers_missing", "markers": []}
+        # Unlike markers (which sit on the tray), these corners are the tray's own: keep nearly all of it.
+        m = BORDER - 8
+        dst = np.array([[m, m], [WARP_W - m, m], [WARP_W - m, WARP_H - m], [m, WARP_H - m]], dtype="float32")
+        M = cv2.getPerspectiveTransform(src, dst)
+        warped = cv2.warpPerspective(img, M, (WARP_W, WARP_H))
+        info = {"sharpness": round(float(cv2.Laplacian(cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var()), 1)}
+        if geometry:
+            info["_geom"] = (src, M)
+        return warped[BORDER:WARP_H - BORDER, BORDER:WARP_W - BORDER], info
+
+    def _find_objects(self, roi) -> list[dict]:
+        """Everything on the tray that differs from the tray colour, by outline. Soft glare follows the
+        slowly-changing background and drops out. Touching round pills count separately."""
+        import cv2
+        import numpy as np
+        lab = cv2.cvtColor(cv2.GaussianBlur(roi, (5, 5), 0), cv2.COLOR_BGR2LAB)
+        L = lab[..., 0].astype(np.float32)
+        k = np.ones((3, 3), np.uint8)
+        # An object has a hard edge; glare fades out gradually, however bright it is. So objects are
+        # the shapes enclosed by strong edges, which also keeps glare from merging with a pill beside it.
+        grad = sum(np.abs(cv2.Sobel(lab[..., i], cv2.CV_32F, dx, 1 - dx)) for i in range(3) for dx in (0, 1))
+        edges = (grad > 45).astype(np.uint8) * 255
+        rh, rw = edges.shape
+        edges[:4, :] = edges[-4:, :] = 0
+        edges[:, :4] = edges[:, -4:] = 0
+        # Paper corner markers are black and white together: not objects.
+        tray_l = float(np.median(L))
+        for y0, x0 in ((0, 0), (0, rw - int(rw * 0.22)), (rh - int(rh * 0.28), 0), (rh - int(rh * 0.28), rw - int(rw * 0.22))):
+            y1, x1 = y0 + int(rh * 0.28), x0 + int(rw * 0.22)
+            patch = L[y0:y1, x0:x1]
+            if (patch < tray_l - 35).mean() > 0.04 and (patch > tray_l + 35).mean() > 0.02:
+                edges[y0:y1, x0:x1] = 0
+        sealed = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8))
+        outlines, _ = cv2.findContours(sealed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        mask = np.zeros(edges.shape, np.uint8)
+        cv2.drawContours(mask, outlines, -1, 255, -1)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, np.ones((9, 9), np.uint8))
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        found = []
+        for c in contours:
+            area = float(cv2.contourArea(c))
+            if area < self.settings.tray_min_area_px:
+                continue
+            one = np.zeros(mask.shape, np.uint8)
+            cv2.drawContours(one, [c], -1, 255, -1)
+            inside = cv2.erode(one, k, iterations=2)
+            sample = cv2.cvtColor(cv2.GaussianBlur(roi, (5, 5), 0), cv2.COLOR_BGR2HSV)[inside > 0]
+            hsv = [int(np.median(sample[:, i])) for i in range(3)] if len(sample) else [0, 0, 0]
+            if area > 0.25 * mask.size:
+                (x, y), r = cv2.minEnclosingCircle(c)
+                found.append({"x": float(x), "y": float(y), "r": float(r), "hsv": hsv, "verdict": "shape_mismatch", "area": area})
+                continue  # far too big for a pill: a hand or something covering the tray
+            dist = cv2.distanceTransform(one, cv2.DIST_L2, 5)
+            n, labels = cv2.connectedComponents((dist >= 0.78 * dist.max()).astype(np.uint8))
+            for i in range(1, n):
+                ys, xs = np.nonzero(labels == i)
+                found.append({"x": float(xs.mean()), "y": float(ys.mean()), "r": float(dist[labels == i].max()), "hsv": hsv,
+                              "verdict": "ok", "area": area / (n - 1)})
+        return found
+
+    def _count_outlines(self, roi, classes: list[dict], expected: dict | None) -> dict:
+        """Count objects by outline. An object in a known pill colour goes to that type. One in no known
+        colour (white pills on an uncalibrated type) fills the types this dose expects, in order."""
+        objects = self._find_objects(roi)
+        counts = {c["class_id"]: 0 for c in classes}
+        by_id = {c["class_id"]: c for c in classes}
+        problems, blobs, unknown = [], [], []
+        for ob in objects:
+            hit = next((c["class_id"] for c in classes if _in_ranges(ob["hsv"], (c.get("hsv") or {}).get("ranges") or [])), None)
+            if ob["verdict"] == "ok" and hit is None:
+                unknown.append(ob)
+                continue
+            ob["class_id"] = hit or (classes[0]["class_id"] if classes else "")
+            blobs.append(ob)
+        wanted = [cid for cid, n in (expected or {}).items() for _ in range(int(n))]
+        taken = {cid: sum(b["class_id"] == cid for b in blobs if b["verdict"] == "ok") for cid in counts}
+        fill = []
+        for cid in wanted:
+            if taken.get(cid, 0) > 0:
+                taken[cid] -= 1
+            else:
+                fill.append(cid)
+        overflow = next((cid for cid, n in (expected or {}).items() if n > 0), None) or (classes[0]["class_id"] if classes else "")
+        for ob in unknown:
+            cid = fill.pop(0) if fill else overflow
+            if (by_id.get(cid, {}).get("hsv") or {}).get("sample_hsv"):
+                ob["verdict"] = "shape_mismatch"  # this type was calibrated and the object isn't that colour
+            ob["class_id"] = cid
+            blobs.append(ob)
+        for ob in blobs:
+            if ob["verdict"] == "ok":
+                counts[ob["class_id"]] = counts.get(ob["class_id"], 0) + 1
+            else:
+                problems.append({"class_id": ob["class_id"], "verdict": ob["verdict"], "area": round(ob["area"]), "elongation": 0})
+        return {"status": "shape_mismatch" if problems else "ok", "counts": counts, "problems": problems[:6],
+                "blobs": [{"class_id": b["class_id"], "x": round(b["x"], 1), "y": round(b["y"], 1), "r": round(b["r"], 1),
+                           "verdict": b["verdict"]} for b in blobs[:24]]}
 
     def count_loose(self, roi, classes: list[dict]) -> tuple[dict, list]:
         """Count pills by colour without the tray's size rules (the dish and the hand are a different size
@@ -217,10 +363,12 @@ class TrayInspector:
         return cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, k), cv2.MORPH_CLOSE, k)
 
     # -- counting ---------------------------------------------------------------
-    def _inspect(self, roi, classes: list[dict]) -> dict:
+    def _inspect(self, roi, classes: list[dict], expected: dict | None = None) -> dict:
         """Count each class in the tray area. Also returns where every counted object is, so the
         photo proof can circle exactly what was counted."""
         import cv2
+        if self.settings.tray_vision == "outline":
+            return self._count_outlines(roi, classes, expected)
         hsv = cv2.cvtColor(cv2.GaussianBlur(roi, (5, 5), 0), cv2.COLOR_BGR2HSV)
         counts, problems, blobs = {}, [], []
         for cls in classes:
@@ -247,13 +395,13 @@ class TrayInspector:
                 break
         return {"status": status, "counts": counts, "problems": problems[:6], "blobs": blobs[:24]}
 
-    def analyze(self, img, classes: list[dict]) -> dict:
+    def analyze(self, img, classes: list[dict], expected: dict | None = None) -> dict:
         roi, info = self._warp(img)
         if roi is None:
             return info
-        return {**self._inspect(roi, classes), **info}
+        return {**self._inspect(roi, classes, expected), **info}
 
-    def render_evidence(self, img, classes: list[dict]):
+    def render_evidence(self, img, classes: list[dict], expected: dict | None = None):
         """The tray area of one frame with each counted pill circled and tagged (A1, B1...).
         Returns None when the tray area cannot be found, so nothing outside the tray is ever kept."""
         import cv2
@@ -261,7 +409,7 @@ class TrayInspector:
         roi, _ = self._warp(img)
         if roi is None:
             return None
-        res = self._inspect(roi, classes)
+        res = self._inspect(roi, classes, expected)
         out = cv2.resize(roi, (roi.shape[1] * SCALE, roi.shape[0] * SCALE), interpolation=cv2.INTER_CUBIC)
         by_id = {c["class_id"]: c for c in classes}
         seen: dict[str, int] = {}
@@ -728,8 +876,8 @@ class VisionService:
                 img = await asyncio.to_thread(simulated_tray, classes, shown, scenario)
                 self._keep_photo(obs, img)
         else:
-            frames, err = await self._collect("tray", lambda img: self.tray.analyze(img, classes))
-            obs = Observation(kind, "UNCERTAIN", "aruco+hsv-contours")
+            frames, err = await self._collect("tray", lambda img: self.tray.analyze(img, classes, expected))
+            obs = Observation(kind, "UNCERTAIN", "tray-colour+outline" if self.settings.tray_vision == "outline" else "aruco+hsv-contours")
             self._frame_meta(obs, frames)
             obs.details["expected"] = expected
             if err or not frames:
@@ -761,7 +909,7 @@ class VisionService:
                 obs.message = message(obs.reason_code)
             if frames:
                 # The newest frame of the check, cropped to the tray, every counted pill circled.
-                img = await asyncio.to_thread(self.tray.render_evidence, frames[-1][0].image, classes)
+                img = await asyncio.to_thread(self.tray.render_evidence, frames[-1][0].image, classes, expected)
                 if img is not None:
                     self._keep_photo(obs, img)
         rev_after = self.hardware.fields.get("rev")
@@ -847,9 +995,9 @@ class VisionService:
             if roi is None:
                 return {"frame": frame, "hint": info.get("status")}
             src, M = info["_geom"]
-            res = self.tray._inspect(roi, classes)
-            pills = warped_pills(res["blobs"], M)
             want = {c["class_id"]: int(expected.get(c["class_id"], 0)) for c in classes}
+            res = self.tray._inspect(roi, classes, want)
+            pills = warped_pills(res["blobs"], M)
             ready = res["status"] == "ok" and all(res["counts"].get(k, 0) == v for k, v in want.items())
             return {"frame": frame, "quad": [[float(x) / W, float(y) / H] for x, y in src], "pills": pills,
                     "counts": res["counts"], "expected": want, "ready": ready, "hint": None if res["status"] == "ok" else res["status"]}

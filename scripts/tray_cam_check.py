@@ -91,7 +91,7 @@ async def run(a) -> int:
         cv2.imwrite(str(out), last)
         if a.tray:
             from app.vision import TrayInspector
-            settings = Settings.from_env(genai_backend="off")
+            settings = Settings.from_env(genai_backend="off", tray_vision="markers")
             warped, info = TrayInspector(settings)._warp(last)
             if warped is None and info.get("status") == "markers_missing":
                 report(False, "tray view", f"corner markers seen: {info.get('markers')} (need 0, 1, 2, 3). "

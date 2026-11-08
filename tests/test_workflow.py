@@ -261,3 +261,17 @@ def test_assistant_explains_block_with_authoritative_text(harness):
     r = h.post("/api/assistant", {"request_id": rid(), "question": "Why did the count fail?"})
     assert r["authoritative"].startswith("Expected 1 blue token and observed 2.")
     assert any(f["id"] == "F-block-COUNT_MISMATCH" for f in r["supporting_facts"])
+
+
+def test_an_expired_count_goes_back_to_be_counted_again(harness):
+    h = harness(tray_max_age_s=0.2)
+    card = h.demo_due()
+    t = h.to_dose_check(card)
+    assert h.check(t)["state"] == "RECIPIENT_RECHECK"
+    h.clock.advance(1.0)
+    h.wait(lambda s: s["workflow"]["txn"]["release_available"] is False, msg="count expired")
+    r = h.post("/api/doses/release", {"request_id": rid(), "txn_id": t}, expect=409)
+    assert r["reason_codes"] == ["INSPECTION_EXPIRED"] and h.txn()["state"] == "DOSE_CHECK"
+    assert h.check(t)["state"] == "RECIPIENT_RECHECK"  # counted again, nothing dispensed twice
+    assert h.txn()["release_available"] is True
+    assert [c["kind"] for c in h.c.get(f"/api/history/{card['dose_id']}").json()["commands"]].count("DISPENSE") == 1

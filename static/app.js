@@ -1070,8 +1070,14 @@ function stepPanel(s, tx) {
       s.workflow.busy === "HAND_CHECK" ? t("verify.checking_hand")
         : tx.pose === "FACE" && tx.state !== "COLLECTION_CHECK" ? t("verify.checking_face") : t("verify.checking_tray")));
   } else if (tx.state === "RECIPIENT_RECHECK") {
-    row.append(h("button", { class: "btn btn-primary btn-big ringed", disabled: !tx.release_available, onclick: () => release(tx) }, icon("lock-key-open"), t(`stage.${tx.state}.btn`)));
-    if (!tx.release_available) zone.append(h("p", { class: "muted" }, t("verify.unlock_unavailable")));
+    // The count only stays valid briefly. Asking to unlock on an old count sends the dose back to be counted again.
+    const recount = !tx.release_available && !wfBusy && (tx.blocks || []).some((b) => ["INSPECTION_EXPIRED", "INSPECTION_MISSING", "TRAY_REVISION_CHANGED"].includes(b.code));
+    if (recount) {
+      row.append(h("button", { class: "btn btn-primary btn-big ringed", onclick: () => { S.autoFailed = null; return act("recount", () => api("/api/doses/release", { txn_id: tx.txn_id }, { noRetry: true }).catch(() => null)); } }, icon("camera"), t("stage.DOSE_CHECK.btn")));
+    } else {
+      row.append(h("button", { class: "btn btn-primary btn-big ringed", disabled: !tx.release_available, onclick: () => release(tx) }, icon("lock-key-open"), t(`stage.${tx.state}.btn`)));
+      if (!tx.release_available) zone.append(h("p", { class: "muted" }, t("verify.unlock_unavailable")));
+    }
   } else if (key === "HAND_CHECK") {
     row.append(h("button", { class: "btn btn-primary btn-big ringed", onclick: () => runHand(tx) }, icon("hand-palm"), t("stage.HAND_CHECK.btn")));
   } else if (tx.next_action) {
@@ -1640,6 +1646,23 @@ const schedules = {
 };
 
 /* ---------------------------------------------------------------- Change plan (wizard) */
+// "How often?" only fills in clock times. The person still sees, can change and must confirm every one.
+const HOW_OFTEN = [["1", "Once a day", ["08:00"]], ["2", "Twice a day", ["08:00", "20:00"]],
+  ["3", "Three times a day", ["08:00", "14:00", "20:00"]], ["4", "Four times a day", ["08:00", "12:00", "16:00", "20:00"]],
+  ["e12", "Every 12 hours", 12], ["e8", "Every 8 hours", 8], ["e6", "Every 6 hours", 6], ["custom", "Choose my own times", null]];
+const EVERY_START = { 12: "08:00", 8: "06:00", 6: "06:00" };
+function everyHours(start, gap) {
+  const [hr, min] = start.split(":").map(Number);
+  const out = [];
+  for (let k = 0; k * gap < 24; k++) out.push(`${String((hr + k * gap) % 24).padStart(2, "0")}:${String(min).padStart(2, "0")}`);
+  return out.sort();
+}
+function howOftenOf(e) {
+  if (e.howOften) return e.howOften;
+  const n = e.times.length;
+  return n >= 1 && n <= 4 ? String(n) : "custom";
+}
+
 const setup = {
   key: null,
   async render() {
@@ -2031,11 +2054,32 @@ function entryEditor(e, i, data, errFor) {
       h("label", { class: "field" }, "No more than", num("max_per_day", 1, 8, () => "a day"), h("span", { class: "help" }, "in any 24 hours"), errFor(i, "max_per_day")));
   } else {
     const timeIn = h("input", { type: "time", value: "08:00", "aria-label": "Add a time" });
-    when = h("div", { class: "times" }, h("span", { class: "strong" }, "Times"),
-      e.times.map((tm, k) => h("span", { class: `time-chip ${e.suggested && e.suggested.times ? "suggested" : ""}` }, fmtTime(tm),
-        h("button", { type: "button", "aria-label": `Remove ${fmtTime(tm)}`, onclick: () => { e.times.splice(k, 1); e.confirmed = false; drawSetup(); } }, icon("x")))),
-      timeIn,
-      h("button", { class: "btn btn-quiet", type: "button", onclick: () => { const v = timeIn.value; if (v && !e.times.includes(v)) { e.times.push(v); e.times.sort(); e.confirmed = false; drawSetup(); } } }, icon("plus"), "Add time"));
+    const chosen = howOftenOf(e);
+    const preset = HOW_OFTEN.find(([v]) => v === chosen);
+    const gap = typeof preset[2] === "number" ? preset[2] : null;
+    const suggestTimes = (times) => { e.times = times; e.suggested = { ...(e.suggested || {}), times: true }; e.confirmed = false; drawSetup(); };
+    const often = h("select", { onchange: (ev) => {
+      e.howOften = ev.target.value;
+      const [, , plan] = HOW_OFTEN.find(([v]) => v === e.howOften);
+      if (typeof plan === "number") { e.everyStart = EVERY_START[plan]; suggestTimes(everyHours(e.everyStart, plan)); }
+      else if (plan) suggestTimes([...plan]);
+      else { e.confirmed = false; drawSetup(); }
+    } }, HOW_OFTEN.map(([v, name]) => h("option", { value: v, selected: v === chosen }, name)));
+    const start = gap ? h("input", { type: "time", value: e.everyStart || EVERY_START[gap], "aria-label": "First dose of the day",
+      onchange: (ev) => { if (ev.target.value) { e.everyStart = ev.target.value; suggestTimes(everyHours(e.everyStart, gap)); } } }) : null;
+    const overnight = e.times.some((tm) => { const hr = Number(tm.slice(0, 2)); return hr < 6 || hr >= 23; });
+    const edited = () => { e.howOften = null; e.confirmed = false; drawSetup(); };
+    when = h("div", { class: "when" },
+      h("div", { class: "how-often" },
+        h("label", { class: "field" }, "How often", often),
+        start ? h("label", { class: "field" }, "First dose of the day", start) : null),
+      h("div", { class: "times" }, h("span", { class: "strong" }, "Times"),
+        e.times.map((tm, k) => h("span", { class: `time-chip ${e.suggested && e.suggested.times ? "suggested" : ""}` }, fmtTime(tm),
+          h("button", { type: "button", "aria-label": `Remove ${fmtTime(tm)}`, onclick: () => { e.times.splice(k, 1); edited(); } }, icon("x")))),
+        timeIn,
+        h("button", { class: "btn btn-quiet", type: "button", onclick: () => { const v = timeIn.value; if (v && !e.times.includes(v)) { e.times.push(v); e.times.sort(); edited(); } } }, icon("plus"), "Add time")),
+      overnight ? h("p", { class: "muted small" }, "One of these reminders is during the night. Check that's what the label means.") : null,
+      e.times.length ? h("p", { class: "muted small" }, "These are suggested times. Check them against the label or with your pharmacist.") : null);
   }
   return h("div", { class: "entry" },
     h("div", { class: "entry-grid" },
