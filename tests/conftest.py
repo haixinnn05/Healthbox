@@ -9,9 +9,19 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
+from app import store as store_module
 from app.timeutil import FakeClock
 
 START = datetime(2026, 11, 7, 13, 0, tzinfo=timezone.utc)  # 8:00 AM New York
+PRODUCT_CLASSES = store_module.DEFAULT_CLASSES
+
+
+@pytest.fixture(autouse=True)
+def blue_pills_in_test_pictures(monkeypatch):
+    """The test pictures draw blue pills on a light tray, so tests use a blue type to match them.
+    The product's own pill types are checked in test_pill_types.py."""
+    blue = ("blue", "Blue", "A", "#2F6FD6", {"ranges": [[[95, 90, 60], [130, 255, 255]]]})
+    monkeypatch.setattr(store_module, "DEFAULT_CLASSES", [blue, PRODUCT_CLASSES[1]])
 
 
 def rid() -> str:

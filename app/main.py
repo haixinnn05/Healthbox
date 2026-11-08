@@ -1158,7 +1158,7 @@ def _create_demo_plan(svc: Services) -> None:
     persons = svc.store.persons()
     person_id = persons[-1]["person_id"] if persons else None
     entries = [
-        {"entry_key": "demoA", "label": "Demo token A (fictional)", "strength_text": "blue", "quantity": 1,
+        {"entry_key": "demoA", "label": "Demo token A (fictional)", "strength_text": "white", "quantity": 1,
          "delivery_mode": "DEVICE", "class_id": "blue", "cartridge": "A", "times": []},
         {"entry_key": "demoB", "label": "Demo token B (fictional)", "strength_text": "orange", "quantity": 1,
          "delivery_mode": "DEVICE", "class_id": "orange", "cartridge": "B", "times": []},

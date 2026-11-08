@@ -1887,12 +1887,18 @@ function drawSetup() {
   const groups = [step1, step2, step3];
   st.step = Math.min(st.step || 0, groups.length - 1);
   const names = [t("setup.step1"), t("setup.step2"), t("setup.step3")];
+  // The face comes first: no medicine can be saved without it (the server refuses too).
+  const goStep = (i) => {
+    if (i > 0 && !d.person_id) { st.step = 0; toast(t("setup.face_first"), true); drawSetup(); return; }
+    st.step = i;
+    drawSetup();
+  };
   const wizard = h("ol", { class: "wizard" }, names.map((n, i) => h("li", { class: i < st.step ? "done" : null },
-    h("button", { type: "button", "aria-current": i === st.step ? "step" : null, onclick: () => { st.step = i; drawSetup(); } },
+    h("button", { type: "button", "aria-current": i === st.step ? "step" : null, onclick: () => goStep(i) },
       h("span", { class: "n" }, i < st.step ? [icon("check"), h("span", { class: "sr-only" }, "Done: ")] : i + 1), n))));
   const foot = h("div", { class: "wizard-foot" },
     st.step > 0 ? h("button", { class: "btn", onclick: () => { st.step -= 1; drawSetup(); } }, icon("arrow-left"), t("setup.back")) : h("span"),
-    st.step < groups.length - 1 ? h("button", { class: "btn btn-primary", onclick: () => { st.step += 1; drawSetup(); } }, t("setup.next"), icon("arrow-right")) : null);
+    st.step < groups.length - 1 ? h("button", { class: "btn btn-primary", onclick: () => goStep(st.step + 1) }, t("setup.next"), icon("arrow-right")) : null);
   doorMain("setup",
     h("div", { class: "section-head" }, h("h2", {}, t("nav.setup")),
       h("p", {}, st.plan_version_id ? "Changes make a new version. Doses already shown keep their old instructions." : "Three short steps. Nothing is scheduled until you confirm.")),

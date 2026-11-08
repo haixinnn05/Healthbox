@@ -156,10 +156,9 @@ def confirm_plan(store: Store, reminders, *, request: dict, max_per_channel: int
         raise WorkflowError(409, "PLAN_VERSION_MISMATCH", "The plan changed since you opened it.")
 
     person_id = request.get("person_id") or None
-    if any(e["delivery_mode"] == "DEVICE" for e in entries):
-        if not person_id or not store.person(person_id):
-            raise WorkflowError(422, "NOT_ENROLLED", "Device entries need an enrolled recipient.",
-                                errors=[{"field": "person_id", "message": "Enroll and select the recipient."}])
+    if not person_id or not store.person(person_id):  # every medicine, including reminder-only ones
+        raise WorkflowError(422, "NOT_ENROLLED", "Add your face before adding medicines.",
+                            errors=[{"field": "person_id", "message": "Add your face first."}])
 
     all_times = sorted({t for e in entries for t in e["times"]})
     issues = upcoming_dst_issues(all_times, tz, local_date(store.clock.now(), tz))

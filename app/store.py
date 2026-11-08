@@ -204,7 +204,8 @@ CREATE TABLE IF NOT EXISTS assistant_exchanges (
 
 DEFAULT_CLASSES = [
     # Two visible demo token classes. HSV ranges are starting points; calibrate on site.
-    ("blue", "Blue", "A", "#2F6FD6", {"ranges": [[[95, 90, 60], [130, 255, 255]]]}),
+    # Cartridge A holds white pills. "blue" is only the internal id kept from earlier builds; people see "White".
+    ("blue", "White", "A", "#F7F5EF", {"ranges": [[[0, 0, 150], [179, 60, 255]]]}),
     ("orange", "Orange", "B", "#E8822A", {"ranges": [[[5, 110, 90], [22, 255, 255]]]}),
 ]
 

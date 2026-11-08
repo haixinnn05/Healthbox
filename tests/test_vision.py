@@ -5,10 +5,12 @@ import numpy as np
 import pytest
 
 from app.config import ROOT, Settings
-from app.store import DEFAULT_CLASSES
+from conftest import PRODUCT_CLASSES
 from app.vision import FaceEngine, TrayInspector
 
-CLASSES = [{"class_id": c[0], "label": c[1], "cartridge": c[2], "hsv": c[4]} for c in DEFAULT_CLASSES]
+# These pictures draw blue pills on a light tray, so the classes here match them.
+CLASSES = [{"class_id": "blue", "label": "Blue", "cartridge": "A", "hsv": {"ranges": [[[95, 90, 60], [130, 255, 255]]]}},
+           *[{"class_id": c[0], "label": c[1], "cartridge": c[2], "hsv": c[4]} for c in PRODUCT_CLASSES if c[0] != "blue"]]
 BLUE, ORANGE = (214, 111, 47), (42, 130, 232)  # BGR, matching the demo token colours
 
 
