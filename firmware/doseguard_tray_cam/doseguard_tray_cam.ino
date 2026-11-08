@@ -11,7 +11,8 @@
     Receiving a JPEG now does not prove it was captured now, so this firmware never serves a
     frame that was already buffered when the request came in.
 
-  The camera supplies pictures only. It has no link to the motors or the latch.
+  The camera supplies pictures only. It has no link to the motors or the latch. It sits inside the box
+  above the tray, so it keeps the board's white LED on, dimly and steadily (LIGHT_DUTY).
 
   Setup: copy wifi_secrets.example.h to wifi_secrets.h (gitignored) and fill in the network.
   Then in the app:  CAMERA_MODE=dual_camera TRAY_CAMERA_URL=http://doseguard-tray.local/snapshot ./run.sh
@@ -37,7 +38,11 @@ const char* HOSTNAME = "doseguard-tray";      // http://doseguard-tray.local/sna
 const framesize_t FRAME_SIZE = FRAMESIZE_VGA; // 640x480: enough for the corner markers and pill outlines
 const int JPEG_QUALITY = 12;                  // 10-63, lower = better quality and bigger files
 const int MAX_STALE_DISCARDS = 4;             // buffered frames thrown away per request at most
-const char* FW_VERSION = "doseguard-tray-0.1";
+const char* FW_VERSION = "doseguard-tray-0.2";
+// Inside the closed box it is dark. The board's white LED (GPIO 4) gives a steady, dim light so every
+// frame is exposed the same way (counting is by colour). 0 = off, 255 = full (too bright and hot).
+const int FLASH_LED_PIN = 4;
+const int LIGHT_DUTY = 40;
 
 // ---------------------------------------------------------------- AI Thinker pin map
 #define PWDN_GPIO_NUM 32
@@ -170,6 +175,9 @@ void setup() {
   Serial.begin(115200);
   snprintf(bootId, sizeof(bootId), "%08lx", (unsigned long)esp_random());
   Serial.printf("\nDoseGuard tray camera %s, boot %s\n", FW_VERSION, bootId);
+  // Steady light before the camera settles its exposure. ledcAttach picks a free LEDC channel, so it
+  // does not clash with the camera clock on channel 0.
+  if (LIGHT_DUTY > 0 && ledcAttach(FLASH_LED_PIN, 5000, 8)) ledcWrite(FLASH_LED_PIN, LIGHT_DUTY);
   if (!startCamera()) {
     Serial.println("Restarting in 5 s.");
     delay(5000);

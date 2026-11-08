@@ -119,6 +119,7 @@ def build_status(services) -> dict:
                            "shape": c["hsv"].get("shape")} for c in store.token_classes()],
         "vision": services.vision.status(),
         "laptop_sound": services.sound.status(),
+        "laptop_voice": services.voice.status(),
         "watch": watch_status(services),
         "followups": followups(services, tz, now),
         "cartridges": cartridge_status(store, plan),
@@ -128,7 +129,8 @@ def build_status(services) -> dict:
         "account": services.account.brief(),  # exists, name, unlocked only
         "signed_out": False,
         "config": {"hardware_mode": s.hardware_mode, "camera_mode": s.camera_mode,
-                   "snooze_minutes": s.snooze_minutes, "followup_minutes": s.followup_minutes, "sound_max": s.sound_max, "needs_review_minutes": s.needs_review_minutes},
+                   "snooze_minutes": s.snooze_minutes, "followup_minutes": s.followup_minutes,
+                   "hand_check": services.engine.hand_check_on, "sound_max": s.sound_max, "needs_review_minutes": s.needs_review_minutes},
     }
     return signed_out_view(snap) if services.account.signed_out() else snap
 

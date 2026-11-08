@@ -87,11 +87,27 @@ touching tokens, hidden markers, blur, and whether a hand-to-mouth movement happ
   Only the perspective-corrected tray inside the four markers is stored, never a face, in `data/evidence/`
   (gitignored); the newest `EVIDENCE_KEEP` (400) are kept. With the simulated camera the picture is drawn and
   labelled SIMULATED. `GET /api/evidence/<name>.jpg` serves them.
-- **Pills in your hand.** After release the person first shows the pills on an open palm to the face camera
+- **Live view.** On the dose steps the camera preview shows what the camera sees, a few times a second
+  (`GET /api/camera/live`): a box around your face, the hand or dish outlined with each counted pill ringed in its
+  colour, or the tray outlined with its pills, and a line such as "✓ 1 of 1 blue". It is display only; the step's own
+  check takes its own frames and decides.
+- **Moves on by itself** (Display → "Move on by itself", on by default): when the live view shows exactly what a step
+  needs for 1.2 seconds, the step's check runs without a press. After a failed try it waits for the view to change.
+  Unlocking the tray always needs a press.
+- **Speaks each step** (Display → "Speak each step", on by default): the laptop says each step, any problem, and
+  "It's time for your medicine" when a dose is due, with macOS `say` in English, Spanish or Chinese (Samantha,
+  Paulina, Tingting when installed). Like the chime, this needs no click. `LAPTOP_VOICE=0` turns it off.
+- **Pill dish.** Print `docs/dish-markers.png` (ids 4-7, about 1.5 cm each) and stick them around a small dark, matte
+  dish. Pouring the pills into it and holding it up is the most reliable "show your pills": any pill colour counts,
+  and it can never be mistaken for the tray (ids 0-3). The open palm still works as a fallback.
+- **Practice and tuning** (Setup → Dispenser): run face, hand-or-dish and tray checks without dispensing, and see
+  pass counts, face match scores against `FACE_MATCH_THRESHOLD` with advice, and how often each check passed first
+  try in real doses. Practice results are kept apart from doses and can be cleared.
+- **Pills in your hand** (optional, **off by default**; Setup → Dispenser → Dose steps, or `HAND_CHECK=1`). Holding several pills up is hard for many people, and the tray was already counted, so it is a choice for supervised use. When on, after release the person first shows the pills on an open palm to the face camera
   (`POST /api/doses/hand`). The palm detector finds the hand and the pills on it are counted by colour, for this
   dose's pill types only (other colours, orange especially, also match skin). It must pass before the tray check,
   unless the person chooses "I can't show them" (`POST /api/doses/hand-skip`, recorded as `HAND_SKIPPED`).
-  Orange, beige and white pills are hard to see on skin, and a failed check says so. The hand-to-mouth watch is
+  Orange, beige and white pills are hard to see on skin, and a failed check says so. A moving hand smears small pills into the skin, so palm frames below `HAND_BLUR_THRESHOLD` (8; a moving hand measured 3-6) are not counted and the person is asked to hold still (`HAND_BLURRY`). The hand-to-mouth watch is
   paused while the hand is held up. A photo of the hand region is kept only if no face overlaps it.
   `HAND_CHECK=0` turns the step off.
 - **Who emptied the tray.** From release until the collection check, the face camera is sampled a few times a second.
@@ -178,8 +194,11 @@ Positioning hints run detection only; enrollment and identity checks take priori
 Preview streams pause when their image is off-screen or the browser tab is hidden. Camera
 checks still require distinct fresh frames over the configured observation window.
 
-### Tray camera (ESP32-CAM, `CAMERA_MODE=dual_camera`)
-The laptop camera checks the person; an ESP32-CAM above the tray checks the dose. Flash
+### Tray camera (ESP32-CAM inside the box, `CAMERA_MODE=dual_camera`)
+The laptop camera checks the person; an ESP32-CAM inside the box, above the tray, checks the dose. The sketch keeps
+the board's white LED on, dim and steady (`LIGHT_DUTY`), because the box is dark and counting is by colour. With this
+camera the tray-empty check runs straight after the hand check, so "Show pills" is the last of 6 steps
+(`AUTO_TRAY_AFTER_HAND`, on by default only in `dual_camera`). Flash
 `firmware/doseguard_tray_cam` (see `firmware/README.md`), then check it and start the app:
 ```bash
 .venv/bin/python scripts/tray_cam_check.py --url http://doseguard-tray.local/snapshot --tray

@@ -81,3 +81,48 @@ class LaptopSound:
         vol, muted = state["volume"], state["muted"]
         return {"enabled": True, "muted": muted, "volume": vol,
                 "quiet": vol is not None and vol < QUIET_VOLUME, "error": self.last_error, "played": self.played}
+
+
+# Preferred macOS voices per language, best first; the first one installed is used.
+VOICES = {
+    "en": ["Samantha", "Flo (English (US))", "Eddy (English (US))", "Albert"],
+    "es": ["Paulina", "Mónica", "Flo (Spanish (Mexico))", "Flo (Spanish (Spain))", "Eddy (Spanish (Mexico))"],
+    "zh": ["Tingting", "Meijia", "Flo (Chinese (China mainland))", "Eddy (Chinese (China mainland))"],
+}
+
+
+class LaptopVoice:
+    """Speaks a dose step aloud with macOS `say`, so it works without a click in the browser (browsers
+    block speech until someone interacts with the page). A new sentence stops the previous one."""
+
+    def __init__(self, enabled: bool):
+        self.enabled = bool(enabled) and sys.platform == "darwin" and shutil.which("say") is not None
+        self.voices: dict[str, str | None] = {}
+        self._proc: subprocess.Popen | None = None
+        self._lock = threading.Lock()
+        if self.enabled:
+            try:
+                listing = subprocess.run(["say", "-v", "?"], capture_output=True, text=True, timeout=5).stdout
+                installed = {line.split("  ")[0].strip() for line in listing.splitlines() if line.strip()}
+            except Exception:
+                installed = set()
+            for lang, names in VOICES.items():
+                self.voices[lang] = next((n for n in names if n in installed), None)
+
+    def speak(self, text: str, lang: str = "en") -> bool:
+        if not self.enabled or not text.strip():
+            return False
+        voice = self.voices.get(lang) or self.voices.get("en")
+        args = ["say", "-r", "165"] + (["-v", voice] if voice else []) + ["--", text[:400]]
+        with self._lock:
+            if self._proc and self._proc.poll() is None:
+                self._proc.terminate()
+            try:
+                self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except Exception as exc:
+                log.warning("speech failed: %s", exc)
+                return False
+        return True
+
+    def status(self) -> dict:
+        return {"enabled": self.enabled, "voices": dict(self.voices)} if self.enabled else {"enabled": False}

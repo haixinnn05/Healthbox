@@ -25,7 +25,8 @@ const long STEPS_PER_REV = 4096;  // 28BYJ-48 in half-step mode (about 4076 meas
 int motor = 0;
 int phase[2] = {0, 0};
 long position[2] = {0, 0};
-uint32_t intervalUs = 820;
+// Bench-measured (28BYJ-48, motor A): 12 V clean at 600 us, stalls at 500; 5 V clean at 850, buzzes at 800.
+uint32_t intervalUs = 850;
 long pocketSteps = 683;
 
 void release(int m) { for (int i = 0; i < 4; i++) digitalWrite(PINS[m][i], LOW); }

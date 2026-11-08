@@ -65,6 +65,7 @@ MESSAGES: dict[str, str] = {
     "COLLECTED_BY_OTHER": "Someone other than you was in view while the tray was open.",
     "COLLECTOR_NOT_SEEN": "Your face was not in view while the tray was open, so it is not known who took the pills out.",
     "NO_HAND": "No open hand was seen. Hold the pills flat on your open palm, facing the camera, about 30 cm away.",
+    "HAND_BLURRY": "Your hand was moving, so the picture was blurry. Hold your hand still, about 30 to 40 cm from the camera.",
     "HAND_UNSTABLE": "The pills in your hand were not counted the same way twice. Keep your hand still and check again.",
     "HAND_COUNT_MISMATCH": "The pills in your hand do not match your dose.",
     "HAND_MODEL_MISSING": "The hand model is missing, so the camera can't check your hand. Run scripts/download_models.py.",

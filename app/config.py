@@ -108,7 +108,15 @@ class Settings:
     action_near_window_s: float = 2.0
     collector_min_samples: int = 3  # face samples needed to say who emptied the tray
     collector_run_samples: int = 5  # a second face must stay this many samples in a row (about a second) to count
-    hand_check: bool = True  # after release, ask the person to show the pills in their hand before the tray check
+    hand_blur_threshold: float = 8.0  # palm region sharpness (Laplacian variance at 320 px); measured 3-6 for a moving hand
+    # After release, ask the person to show the pills in their hand (or the dish) before the tray check. Off by
+    # default: holding several pills up is hard for many people, and the tray was already counted. The Setup
+    # switch (Dispenser, "Dose steps") overrides this.
+    hand_check: bool = False
+    # Check the tray is empty right after the hand check passes (one step). None = only with the in-box
+    # tray camera (CAMERA_MODE=dual_camera), where the tray is in view while the person faces the laptop.
+    auto_tray_after_hand: bool | None = None
+    laptop_voice: bool = True  # speak each dose step through the laptop (macOS say), no click needed
     followup_minutes: int = 5  # ask "did you take it?" this long after release when no taking was seen
     fill_check_max_age_s: float = 900.0  # a pill check must be this recent to record a cartridge fill
 
@@ -151,7 +159,10 @@ class Settings:
             laptop_sound_file=_str("LAPTOP_SOUND_FILE", "/System/Library/Sounds/Glass.aiff"),
             action_watch_s=_float("ACTION_WATCH_S", 180.0),
             followup_minutes=_int("FOLLOWUP_MINUTES", 5),
-            hand_check=_str("HAND_CHECK", "1") not in ("0", "false", "no"),
+            hand_check=_str("HAND_CHECK", "0") in ("1", "true", "yes"),
+            hand_blur_threshold=_float("HAND_BLUR_THRESHOLD", 8.0),
+            auto_tray_after_hand={"1": True, "true": True, "0": False, "false": False}.get(_str("AUTO_TRAY_AFTER_HAND", "").lower()),
+            laptop_voice=_str("LAPTOP_VOICE", "1") not in ("0", "false", "no"),
         )
         return replace(s, **overrides) if overrides else s
 

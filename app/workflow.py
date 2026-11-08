@@ -467,66 +467,67 @@ class WorkflowEngine:
         return await self._idempotent(request_id, "doses/cancel", fn)
 
     # ------------------------------------------------------------------ checks
-    async def run_check(self, request_id: str, txn_id: str) -> dict:
-        async def fn():
-            t = self._txn(txn_id)
-            kind = CHECK_KIND.get(t["state"])
-            if not kind:
-                raise WorkflowError(409, "INVALID_TRANSITION")
-            if t["state"] == "COLLECTION_CHECK" and not self.hand_done(txn_id):
-                raise WorkflowError(409, "HAND_CHECK_FIRST")
-            if self.pending:
-                raise WorkflowError(409, "PENDING_OPERATION")
-            if t["state"] in ("EMPTY_TRAY_CHECK", "DOSE_CHECK"):
-                dev = self._device_blocks(need_armed=False)
-                if dev:
-                    with self.store.tx() as conn:
-                        self._set_blocks(conn, txn_id, dev)
-                    raise WorkflowError(503 if dev[0]["code"] == "DEVICE_DISCONNECTED" else 409, dev[0]["code"], dev[0]["message"],
-                                        reason_codes=[b["code"] for b in dev])
-            expected = json.loads(t["expected_json"])
-            self.busy = kind
-            try:
-                if kind == "FACE_MATCH":
-                    obs = await self.vision.check_face(self.store.person(expected["person_id"]))
-                elif kind == "CLASS_COUNTS":
-                    obs = await self.vision.check_tray(expected["by_class"], kind)
-                else:
-                    obs = await self.vision.check_tray({}, kind)
-            finally:
-                self.busy = None
-            t = self._txn(txn_id)  # state may have changed (fault, door) while capturing
-            t["plan_version_id"] = expected["plan_version_id"]
-            if CHECK_KIND.get(t["state"]) != kind:
+    async def _check_now(self, txn_id: str) -> dict:
+        """Run the camera check for the current stage. Caller holds the engine lock."""
+        t = self._txn(txn_id)
+        kind = CHECK_KIND.get(t["state"])
+        if not kind:
+            raise WorkflowError(409, "INVALID_TRANSITION")
+        if t["state"] == "COLLECTION_CHECK" and not self.hand_done(txn_id):
+            raise WorkflowError(409, "HAND_CHECK_FIRST")
+        if self.pending:
+            raise WorkflowError(409, "PENDING_OPERATION")
+        if t["state"] in ("EMPTY_TRAY_CHECK", "DOSE_CHECK"):
+            dev = self._device_blocks(need_armed=False)
+            if dev:
                 with self.store.tx() as conn:
-                    self._save_obs(conn, t, obs)
-                raise WorkflowError(409, "INVALID_TRANSITION", "The stage changed during the check.")
-            stage = t["state"]  # _set_state mutates t, so remember where this check started
+                    self._set_blocks(conn, txn_id, dev)
+                raise WorkflowError(503 if dev[0]["code"] == "DEVICE_DISCONNECTED" else 409, dev[0]["code"], dev[0]["message"],
+                                    reason_codes=[b["code"] for b in dev])
+        expected = json.loads(t["expected_json"])
+        self.busy = kind
+        try:
+            if kind == "FACE_MATCH":
+                obs = await self.vision.check_face(self.store.person(expected["person_id"]))
+            elif kind == "CLASS_COUNTS":
+                obs = await self.vision.check_tray(expected["by_class"], kind)
+            else:
+                obs = await self.vision.check_tray({}, kind)
+        finally:
+            self.busy = None
+        t = self._txn(txn_id)  # state may have changed (fault, door) while capturing
+        t["plan_version_id"] = expected["plan_version_id"]
+        if CHECK_KIND.get(t["state"]) != kind:
             with self.store.tx() as conn:
-                obs_id = self._save_obs(conn, t, obs)
-                if obs.result != "PASS":
-                    code = obs.reason_code or "INVALID_TRANSITION"
-                    self._set_blocks(conn, txn_id, [{"code": code, "message": obs.message or message(code), "details": obs.details}])
-                elif t["state"] == "PERSON_CHECK":
-                    self._set_state(conn, t, "EMPTY_TRAY_CHECK")
-                elif t["state"] == "DOSE_CHECK":
-                    self._set_state(conn, t, "RECIPIENT_RECHECK")
-                elif t["state"] == "COLLECTION_CHECK":
-                    self._record_collector(conn, t)
-                    self._complete(conn, t, "OBSERVED")
-                else:
-                    self._set_blocks(conn, txn_id, [])
-            if obs.result == "PASS" and stage == "EMPTY_TRAY_CHECK":
-                await self._begin_dispense(t)
-            if obs.result == "PASS" and stage == "COLLECTION_CHECK":
-                await self._lock_latch(t)
-                w = self.vision.watch
-                if w and w.txn_id == txn_id and w.tracker.observed_at is not None and not w.action_saved:
-                    self._record_action(self._txn(txn_id), w, "PASS")  # seen already: record it with the collection
-            t = self._txn(txn_id)
-            return {"txn_id": txn_id, "observation_id": obs_id, "kind": kind, "result": obs.result,
-                    "reason_codes": [obs.reason_code] if obs.reason_code else [], "message": obs.message, "state": t["state"]}
-        return await self._idempotent(request_id, "doses/check", fn)
+                self._save_obs(conn, t, obs)
+            raise WorkflowError(409, "INVALID_TRANSITION", "The stage changed during the check.")
+        stage = t["state"]  # _set_state mutates t, so remember where this check started
+        with self.store.tx() as conn:
+            obs_id = self._save_obs(conn, t, obs)
+            if obs.result != "PASS":
+                code = obs.reason_code or "INVALID_TRANSITION"
+                self._set_blocks(conn, txn_id, [{"code": code, "message": obs.message or message(code), "details": obs.details}])
+            elif t["state"] == "PERSON_CHECK":
+                self._set_state(conn, t, "EMPTY_TRAY_CHECK")
+            elif t["state"] == "DOSE_CHECK":
+                self._set_state(conn, t, "RECIPIENT_RECHECK")
+            elif t["state"] == "COLLECTION_CHECK":
+                self._record_collector(conn, t)
+                self._complete(conn, t, "OBSERVED")
+            else:
+                self._set_blocks(conn, txn_id, [])
+        if obs.result == "PASS" and stage == "EMPTY_TRAY_CHECK":
+            await self._begin_dispense(t)
+        if obs.result == "PASS" and stage == "COLLECTION_CHECK":
+            await self._lock_latch(t)
+            w = self.vision.watch
+            if w and w.txn_id == txn_id and w.tracker.observed_at is not None and not w.action_saved:
+                self._record_action(self._txn(txn_id), w, "PASS")  # seen already: record it with the collection
+        t = self._txn(txn_id)
+        return {"txn_id": txn_id, "observation_id": obs_id, "kind": kind, "result": obs.result,
+                "reason_codes": [obs.reason_code] if obs.reason_code else [], "message": obs.message, "state": t["state"]}
+    async def run_check(self, request_id: str, txn_id: str) -> dict:
+        return await self._idempotent(request_id, "doses/check", lambda: self._check_now(txn_id))
 
     # ------------------------------------------------------------------ dispensing
     async def _begin_dispense(self, t: dict) -> None:
@@ -757,8 +758,8 @@ class WorkflowEngine:
     # ------------------------------------------------------------------ pills in the hand
     def hand_done(self, txn_id: str) -> bool:
         """The tray check waits until the pills in the hand were checked (passed) or the person said they
-        can't show them. HAND_CHECK=0 turns the step off."""
-        if not self.settings.hand_check:
+        can't show them. Only when the step is on (Setup switch, or HAND_CHECK=1)."""
+        if not self.hand_check_on:
             return True
         return bool(self.store.q1("SELECT 1 FROM observations WHERE txn_id=? AND kind='HAND_CHECK'"
                                   " AND (result='PASS' OR reason_code='HAND_SKIPPED') LIMIT 1", (txn_id,)))
@@ -783,10 +784,49 @@ class WorkflowEngine:
                 else:
                     code = obs.reason_code or "HAND_UNSTABLE"
                     self._set_blocks(conn, txn_id, [{"code": code, "message": obs.message or message(code), "details": obs.details}])
-            return {"txn_id": txn_id, "observation_id": obs_id, "kind": "HAND_CHECK", "result": obs.result,
-                    "reason_codes": [obs.reason_code] if obs.reason_code else [], "message": obs.message, "state": t["state"],
-                    "photo": obs.details.get("photo")}
+            out = {"txn_id": txn_id, "observation_id": obs_id, "kind": "HAND_CHECK", "result": obs.result,
+                   "reason_codes": [obs.reason_code] if obs.reason_code else [], "message": obs.message, "state": t["state"],
+                   "photo": obs.details.get("photo")}
+            if obs.result == "PASS" and self.merged_collect:
+                # The camera inside the box sees the tray while the person faces the laptop: check that
+                # the tray is empty straight away, so showing the pills is the last step.
+                try:
+                    tray = await self._check_now(txn_id)
+                    out["tray"] = tray
+                    out["state"] = tray["state"]
+                except WorkflowError as exc:
+                    out["tray"] = {"result": "NOT_RUN", "reason_codes": [exc.code], "message": exc.msg}
+            return out
         return await self._idempotent(request_id, "doses/hand", fn)
+
+    @property
+    def hand_check_on(self) -> bool:
+        """The Setup switch wins; without it, HAND_CHECK from the environment (off by default)."""
+        v = self.store.meta_get("hand_check")
+        return self.settings.hand_check if v is None else v == "1"
+
+    @property
+    def merged_collect(self) -> bool:
+        """Hand check and tray-empty check as one step: on with the in-box tray camera (dual_camera)."""
+        flag = self.settings.auto_tray_after_hand
+        return self.settings.camera_mode == "dual_camera" if flag is None else bool(flag)
+
+    def live_target(self) -> tuple[str, dict] | None:
+        """Which live view the dose page should show now: (face | hand | tray, expected pills)."""
+        t = self.active_txn()
+        if not t or t["demo"] != self.store.demo:
+            return None
+        expected = json.loads(t["expected_json"])["by_class"]
+        state = t["state"]
+        if state in ("PERSON_CHECK", "RECIPIENT_RECHECK"):
+            return "face", {}
+        if state == "EMPTY_TRAY_CHECK":
+            return "tray", {}
+        if state == "DOSE_CHECK":
+            return "tray", expected
+        if state == "COLLECTION_CHECK":
+            return ("tray", {}) if self.hand_done(t["txn_id"]) else ("hand", expected)
+        return None
 
     async def skip_hand(self, request_id: str, txn_id: str) -> dict:
         """'I can't show them': recorded as not seen, and the tray check can go on."""
@@ -1050,6 +1090,8 @@ class WorkflowEngine:
             "can_cancel": not t["dispense_reserved_at"], "created_at": t["created_at"],
             "watch": self.vision.watch_view(t["txn_id"]),
             "hand_done": self.hand_done(t["txn_id"]) if t["state"] == "COLLECTION_CHECK" else None,
+            "merged_collect": self.merged_collect,
+            "hand_check": self.hand_check_on,
         }
         return out
 

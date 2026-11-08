@@ -419,3 +419,116 @@ def test_showing_the_hand_does_not_count_as_hand_to_mouth(harness):
     w.add(S(2.4, near=3.0), "now")  # hand down
     w.add(S(2.6, near=0.1), "now")
     assert w.add(S(2.8, near=0.1), "now")  # now a real movement to the mouth
+
+
+# ---------------------------------------------------------------- live view, merged step, practice, voice
+def live(h):
+    return h.c.get("/api/camera/live").json()
+
+
+def test_live_view_follows_the_dose_steps(harness):
+    h = harness(hand_check=True)
+    assert live(h)["kind"] is None
+    card = h.demo_due()
+    t = h.start(card)["txn_id"]
+    assert live(h) == {"kind": "face", "ready": True, "simulated": True}
+    h.post("/api/sim/vision", {"face": "unknown"})
+    assert live(h)["ready"] is False
+    h.post("/api/sim/vision", {"face": "recipient"})
+    h.check(t)
+    assert live(h)["kind"] == "tray" and live(h)["ready"] is True  # empty tray
+    h.check(t)
+    h.wait(lambda s: s["workflow"]["txn"]["state"] == "DOSE_CHECK", msg="dose check")
+    assert live(h)["kind"] == "tray" and live(h)["ready"] is True  # exactly the dose
+    h.check(t)
+    h.post("/api/doses/release", {"request_id": rid(), "txn_id": t})
+    h.wait(lambda s: s["workflow"]["txn"]["state"] == "COLLECTION_CHECK", msg="released")
+    assert live(h)["kind"] == "hand" and live(h)["ready"] is True
+    h.post("/api/sim/vision", {"hand": "none"})
+    assert live(h)["ready"] is False
+    h.post("/api/sim/vision", {"hand": "shown"})
+    hand(h, t)
+    assert live(h)["kind"] == "tray" and live(h)["ready"] is False  # pills still in the simulated tray
+    h.sim(action="open_door")
+    h.sim(action="collect")
+    assert live(h)["ready"] is True
+
+
+def test_in_box_camera_checks_the_tray_right_after_the_hand(harness):
+    h = harness(hand_check=True, auto_tray_after_hand=True)
+    card, t = released(h)
+    assert h.txn()["merged_collect"] is True
+    r = hand(h, t)  # pills still in the tray: the hand passes, the tray check reports it
+    assert r["result"] == "PASS" and r["tray"]["result"] == "FAIL" and r["state"] == "COLLECTION_CHECK"
+    h.sim(action="open_door")
+    h.sim(action="collect")
+    assert h.check(t)["state"] == "COMPLETE"
+
+
+def test_in_box_camera_finishes_in_one_step(harness):
+    h = harness(hand_check=True, auto_tray_after_hand=True)
+    card, t = released(h)
+    h.sim(action="open_door")
+    h.sim(action="collect")
+    r = hand(h, t)
+    assert r["result"] == "PASS" and r["tray"]["result"] == "PASS" and r["state"] == "COMPLETE"
+    assert detail(h, card["dose_id"])["dose"]["collection"] == "OBSERVED"
+
+
+def test_practice_runs_never_touch_a_dose_and_are_summarised(harness):
+    h = harness()
+    h.wait(lambda s: s["device"]["connected"], msg="device")
+    h.post("/api/enroll", {"request_id": rid(), "label": "T", "consent": True})
+    for _ in range(2):
+        assert h.post("/api/practice/run", {"request_id": rid(), "kind": "face"})["result"] == "PASS"
+    r = h.post("/api/practice/run", {"request_id": rid(), "kind": "hand", "class_id": "blue", "count": 1})
+    assert r["result"] == "PASS"
+    h.post("/api/practice/run", {"request_id": rid(), "kind": "hand"}, expect=422)
+    r = h.post("/api/practice/run", {"request_id": rid(), "kind": "tray"})
+    assert r["result"] == "PASS" and r["photo"]  # empty simulated tray
+    s = h.c.get("/api/practice").json()
+    assert s["practice"]["face"]["runs"] == 2 and s["practice"]["face"]["passed"] == 2
+    assert s["practice"]["hand"]["runs"] == 1 and s["practice"]["tray"]["runs"] == 1
+    assert {d["kind"] for d in s["doses"]} >= {"FACE_MATCH", "HAND_CHECK", "CLASS_COUNTS"}
+    st = h.status()
+    assert st["workflow"]["txn"] is None and st["device"]["tray_revision"] == 0  # nothing moved
+    assert h.post("/api/practice/clear", {"request_id": rid()})["removed"] == 4
+    assert h.c.get("/api/practice").json()["practice"]["face"]["runs"] == 0
+
+
+def test_practice_face_advice():
+    from app.practice import face_advice
+    assert face_advice([], 0.36) is None
+    assert "below the threshold" in face_advice([0.30, 0.6], 0.36)
+    assert "close to the threshold" in face_advice([0.40, 0.6], 0.36)
+    assert "Good margin" in face_advice([0.55, 0.7], 0.36)
+
+
+def test_speaking_is_off_in_tests(harness):
+    h = harness()
+    assert h.post("/api/speak", {"request_id": rid(), "text": "Hello", "lang": "es"})["spoken"] is False
+    h.post("/api/speak", {"request_id": rid(), "text": "Hello", "lang": "fr"}, expect=422)
+
+
+def test_hand_step_is_off_by_default_and_switched_in_setup(harness):
+    from app.config import Settings
+    assert Settings().hand_check is False
+    h = harness()  # harness default: off
+    card, t = released(h)
+    assert h.txn()["hand_check"] is False and h.txn()["hand_done"] is True
+    h.sim(action="open_door")
+    h.sim(action="collect")
+    assert h.check(t)["state"] == "COMPLETE"
+    # Switched on in Setup: the next dose asks for the hand first.
+    h.post("/api/settings/hand-check", {"request_id": rid(), "enabled": True})
+    assert h.status()["config"]["hand_check"] is True
+    h.sim(action="close_door")
+    h.post("/api/demo/trigger", {"request_id": rid(), "entry_keys": ["demoA"]})
+    h.advance(31)
+    st = h.wait(lambda s: any(c["reminder"]["state"] == "DUE" for c in s["today"]), msg="due again")
+    card2 = next(c for c in st["today"] if c["reminder"]["state"] == "DUE")
+    h.wait(lambda s: s["device"]["connected"], msg="device back")
+    h.post("/api/device/arm", {"request_id": rid(), "inspected": True})  # the clock jump looks like a lost heartbeat
+    t2 = release(h, card2)
+    assert h.txn()["hand_check"] is True and h.txn()["hand_done"] is False
+    assert h.check(t2, expect=409)["reason_codes"] == ["HAND_CHECK_FIRST"]

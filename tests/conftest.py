@@ -21,7 +21,7 @@ def rid() -> str:
 def fast_settings(tmp: Path, **kw) -> Settings:
     base = dict(db_path=tmp / "t.db", data_dir=tmp, check_min_span_s=0.0, fake_motion_s_per_unit=0.03,
                 scheduler_tick_s=0.05, camera_mode="simulated", hardware_mode="fake", genai_backend="off",
-                cycle_timeout_per_unit_s=2.0, watch_interval_s=0.02, setup_unlock_minutes=15, laptop_sound=False, hand_check=False)
+                cycle_timeout_per_unit_s=2.0, watch_interval_s=0.02, setup_unlock_minutes=15, laptop_sound=False, hand_check=False, laptop_voice=False)
     base.update(kw)
     return Settings.from_env(**base)
 

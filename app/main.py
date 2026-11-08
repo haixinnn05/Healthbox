@@ -35,7 +35,8 @@ from . import telemetry
 from .plans import confirm_plan
 from .reasons import message
 from .reminders import ReminderService
-from .sound import LaptopSound
+from . import practice
+from .sound import LaptopSound, LaptopVoice
 from .status import build_status, dose_detail, history, recent_events
 from .store import Store, dumps
 from .timeutil import Clock, fmt_local, iso, parse
@@ -59,6 +60,7 @@ class Services:
     token: str
     account: AccountService
     sound: LaptopSound
+    voice: LaptopVoice
 
 
 # ---------------------------------------------------------------- request models
@@ -190,6 +192,21 @@ class SimVision(BaseModel):
     hand: str | None = None
 
 
+class Speak(Cmd):
+    text: str = Field(min_length=1, max_length=400)
+    lang: str = Field(default="en", pattern="^(en|es|zh)$")
+
+
+class Toggle(Cmd):
+    enabled: bool
+
+
+class Practice(Cmd):
+    kind: str = Field(pattern="^(face|hand|tray)$")
+    class_id: str | None = Field(default=None, max_length=24)
+    count: int = Field(default=1, ge=0, le=6)
+
+
 class CartridgeCmd(Cmd):
     cartridge: str = Field(pattern="^[AB]$")
 
@@ -218,7 +235,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         sound = LaptopSound(settings.laptop_sound, settings.laptop_sound_file)
         reminders.on_alert = lambda r: sound.play()  # due reminders chime on this laptop, no click needed
         svc = Services(settings, store, hardware, camera, vision, reminders, engine, ai, secrets.token_urlsafe(24),
-                       AccountService(store, settings), sound)  # in memory: a restart locks Setup
+                       AccountService(store, settings), sound,
+                       LaptopVoice(settings.laptop_sound and settings.laptop_voice))  # in memory: a restart locks Setup
         app.state.svc = svc
         await hardware.start()
         await camera.start()
@@ -328,6 +346,17 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         return StreamingResponse(camera.preview_stream("tray" if role == "tray" else "face"),
                                  media_type="multipart/x-mixed-replace; boundary=frame",
                                  headers={"X-Accel-Buffering": "no"})
+
+    @app.get("/api/camera/live")
+    async def camera_live(request: Request):
+        """What the camera sees for the current dose step, for the overlay on the preview: face boxes, the
+        hand or dish with each pill ringed, or the tray. `ready` means exactly what the step needs is in view."""
+        svc = S(request)
+        target = svc.engine.live_target()
+        if not target:
+            return {"kind": None, "ready": False}
+        kind, expected = target
+        return await svc.vision.live(kind, expected, busy=bool(svc.engine.busy or svc.engine.pending))
 
     @app.get("/api/camera/face-preview")
     async def face_preview(request: Request):
@@ -488,6 +517,61 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     @app.post("/api/doses/confirm")
     async def confirm(request: Request, body: DoseCmd):
         return ok(request, body.request_id, await S(request).engine.confirm_taken(body.request_id, body.dose_id))
+
+    @app.post("/api/speak")
+    async def speak(request: Request, body: Speak):
+        """Say a dose step aloud through the laptop (browsers block speech until someone clicks the page)."""
+        svc = S(request)
+        return ok(request, body.request_id, {"spoken": svc.voice.speak(body.text, body.lang)})
+
+    # ------------------------------------------------------------ practice and tuning (no dose, no motion)
+    @app.post("/api/settings/hand-check")
+    async def set_hand_check(request: Request, body: Toggle):
+        """Turn the "show the pills in your hand" step on or off (Setup). A dose already at that step keeps going."""
+        svc = S(request)
+        with svc.store.tx() as conn:
+            svc.store.meta_set(conn, "hand_check", "1" if body.enabled else "0")
+            svc.store.event(conn, "SETTING_CHANGED", details={"hand_check": body.enabled})
+        return ok(request, body.request_id, {"hand_check": body.enabled})
+
+    @app.get("/api/practice")
+    async def practice_summary(request: Request):
+        svc = S(request)
+        return practice.summary(svc.store, svc.settings.face_match_threshold)
+
+    @app.post("/api/practice/run")
+    async def practice_run(request: Request, body: Practice):
+        svc = S(request)
+        require_idle(svc)
+        classes = svc.store.class_by_id()
+        expected = {}
+        if body.kind in ("hand", "tray") and body.class_id:
+            if body.class_id not in classes:
+                raise WorkflowError(404, "NOT_FOUND", "Unknown pill type.")
+            expected = {body.class_id: body.count}
+        if body.kind == "hand" and not any(expected.values()):
+            raise WorkflowError(422, "VALIDATION", "Choose a pill type and how many are in your hand.")
+        async with svc.engine.lock:
+            if body.kind == "face":
+                obs = await svc.vision.check_face(svc.store.current_person())
+            elif body.kind == "hand":
+                obs = await svc.vision.check_hand(expected)
+            else:
+                obs = await svc.vision.check_tray(expected, "PRACTICE_TRAY")
+        obs.kind = practice.KINDS[body.kind]
+        obs_id = _save_free_obs(svc, obs)
+        return ok(request, body.request_id, {"observation_id": obs_id, "kind": body.kind, "result": obs.result,
+                                             "reason_code": obs.reason_code, "message": obs.message,
+                                             "photo": obs.details.get("photo"), "simulated": obs.simulated,
+                                             "summary": practice.summary(svc.store, svc.settings.face_match_threshold)})
+
+    @app.post("/api/practice/clear")
+    async def practice_clear(request: Request, body: Cmd):
+        svc = S(request)
+        with svc.store.tx() as conn:
+            n = conn.execute("DELETE FROM observations WHERE kind LIKE 'PRACTICE\\_%' ESCAPE '\\'").rowcount
+            svc.store.event(conn, "PRACTICE_CLEARED", details={"removed": n})
+        return ok(request, body.request_id, {"removed": n})
 
     @app.post("/api/sound/test")
     async def sound_test(request: Request, body: Cmd):

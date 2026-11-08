@@ -17,7 +17,7 @@ function guessLang() {
   const n = (navigator.language || "en").slice(0, 2).toLowerCase();
   return I18N[n] ? n : "en";
 }
-const PREFS = (window.PREFS = Object.assign({ lang: guessLang(), size: 0, contrast: false, simple: false, notify: false }, loadPrefs()));
+const PREFS = (window.PREFS = Object.assign({ lang: guessLang(), size: 0, contrast: false, simple: false, notify: false, auto: true, voice: true }, loadPrefs()));
 
 function savePrefs() {
   try { localStorage.setItem("dg-prefs", JSON.stringify(PREFS)); } catch {}
@@ -41,12 +41,19 @@ const S = {
   status: null, offline: false, view: "today", keys: {}, audio: null, setup: null,
   history: null, historySel: null, historyDetail: null, historyVersion: -1,
   busy: null, chat: [], cameraImg: null, lastDue: 0, followSeen: new Set(), fill: null,
+  spokenDue: new Set(), firstDueCheck: true, live: null,
 };
 
 const STEPS = ["PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "HAND_CHECK", "COLLECTION_CHECK"];
 const STEP_INDEX = { PERSON_CHECK: 0, EMPTY_TRAY_CHECK: 1, DISPENSING: 2, DOSE_CHECK: 3, RECIPIENT_RECHECK: 4, RELEASE_PENDING: 4, HAND_CHECK: 5, COLLECTION_CHECK: 6 };
 // After release the person first shows the pills in their hand, then the empty tray (both in COLLECTION_CHECK).
 const stepKey = (tx) => (tx.state === "COLLECTION_CHECK" && tx.hand_done === false ? "HAND_CHECK" : tx.state);
+// With the in-box tray camera the tray is checked right after the hand, so "Show pills" is the last step.
+// "Show pills" only appears when that step is switched on in Setup.
+const stepsFor = (tx) => (!tx.hand_check ? STEPS.filter((x) => x !== "HAND_CHECK")
+  : tx.merged_collect ? STEPS.filter((x) => x !== "COLLECTION_CHECK") : STEPS);
+const stepIndex = (tx) => stepsFor(tx).indexOf(tx.hand_check && tx.merged_collect && stepKey(tx) === "COLLECTION_CHECK" ? "HAND_CHECK"
+  : stepKey(tx) === "RELEASE_PENDING" ? "RECIPIENT_RECHECK" : stepKey(tx));
 const ACTIVE_WF = ["PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "RELEASE_PENDING"];
 // Reason codes that mean "the dispenser itself needs checking". Everyday screens show one plain sentence.
 const DEVICE_CODES = ["DEVICE_FAULT", "STOPPED", "OUTCOME_UNCERTAIN", "RESTART_DURING_MOTION", "COMMAND_REJECTED",
@@ -334,7 +341,13 @@ async function requestNeeded(item) {
 }
 
 /* ---------------------------------------------------------------- read aloud */
-function speak(text) {
+function speak(text, quiet = false) {
+  if (S.status && S.status.laptop_voice && S.status.laptop_voice.enabled) {
+    // Spoken by the laptop itself: works without a click and in background tabs.
+    api("/api/speak", { text: String(text).slice(0, 400), lang: PREFS.lang }, { noRetry: true }).catch(() => {});
+    return;
+  }
+  if (quiet) return;
   if (!("speechSynthesis" in window)) return toast(t("prefs.voice_none"), true);
   speechSynthesis.cancel();
   const u = new SpeechSynthesisUtterance(text);
@@ -442,6 +455,7 @@ async function poll() {
     handleSounds(s);
     notifyDue(s);
     notifyFollowups(s);
+    speakDue(s);
     if (s.due_count > S.lastDue) {
       const c = s.today.find((x) => x.reminder.state === "DUE");
       if (c) announce(`${t("due.now")}: ${c.label}`);
@@ -565,6 +579,12 @@ function renderPrefs() {
         h("input", { type: "checkbox", role: "switch", checked: !!PREFS.notify, onchange: (e) => setNotify(e.target.checked) })),
       h("p", { class: "switch-help" }, t("prefs.notify_help"))),
     h("div", {},
+      h("label", { class: "switch" }, h("span", { class: "row" }, icon("fast-forward"), t("prefs.auto")),
+        h("input", { type: "checkbox", role: "switch", checked: PREFS.auto !== false, onchange: (e) => { PREFS.auto = e.target.checked; savePrefs(); } })),
+      h("p", { class: "switch-help" }, t("prefs.auto_help")),
+      h("label", { class: "switch" }, h("span", { class: "row" }, icon("speaker-high"), t("prefs.voice")),
+        h("input", { type: "checkbox", role: "switch", checked: PREFS.voice !== false, onchange: (e) => { PREFS.voice = e.target.checked; savePrefs(); } })),
+      h("p", { class: "switch-help" }, t("prefs.voice_help")),
       h("label", { class: "switch" }, h("span", { class: "row" }, icon("eye"), t("prefs.simple")),
         h("input", { type: "checkbox", role: "switch", checked: !!PREFS.simple, onchange: (e) => { PREFS.simple = e.target.checked; savePrefs(); route(); } })),
       h("p", { class: "switch-help" }, t("prefs.simple_help"))));
@@ -979,10 +999,12 @@ const verify = {
     if (!tx) return renderNoTxn(s);
     const failed = tx.state === "FAULT" || tx.state === "UNCERTAIN";
     const key = stepKey(tx);
-    const idx = STEP_INDEX[key];
-    const where = idx != null && !failed ? t("step.progress", { n: idx + 1, total: STEPS.length }) : null;
-    const track = h("ol", { class: `track ${failed ? "stopped" : ""}`, "aria-label": where || t(`stage.${key}.title`) },
-      STEPS.map((st, i) => {
+    const steps = stepsFor(tx);
+    const idx = stepIndex(tx) >= 0 ? stepIndex(tx) : null;
+    const where = idx != null && !failed ? t("step.progress", { n: idx + 1, total: steps.length }) : null;
+    const track = h("ol", { class: `track ${failed ? "stopped" : ""}`, style: `grid-template-columns:repeat(${steps.length},1fr)`,
+      "aria-label": where || t(`stage.${key}.title`) },
+      steps.map((st, i) => {
         const cls = failed ? "" : i < idx ? "done" : i === idx ? "current" : "";
         return h("li", { class: cls, "aria-current": cls === "current" ? "step" : null },
           h("span", { class: "dot", "aria-hidden": "true" }), h("span", { class: "name" }, t(`step.${st}`)));
@@ -991,6 +1013,8 @@ const verify = {
       where ? h("p", { class: "lede" }, where) : null));
     const cam = cameraPanel(s, tx);
     cam.append(checkedPanel(tx));
+    drawLive(S.live);
+    speakStep(s);
     setMain(head, track, h("div", { class: "steps-grid" }, stepPanel(s, tx), cam));
   },
 };
@@ -1102,14 +1126,121 @@ function cameraPanel(s, tx) {
       h("div", { class: "sim-cam" }, h("span", { class: "glyph", "aria-hidden": "true" }, icon(pose === "TRAY" ? "squares-four" : "user-focus")),
         h("div", {}, h("h3", {}, pose === "FACE" ? t("camera.face") : t("camera.tray")),
           h("p", { class: "muted" }, trayBypass ? t("camera.bypass_sub") : t("camera.sim_sub")))));
+    panel.append(liveCaption());
     if (s.vision.sim && !PREFS.simple) panel.append(simVisionControls(s, trayBypass));
     return panel;
   }
   const cam = h("div", { class: "camera" });
   if (!S.cameraImg) S.cameraImg = h("img", { alt: t("camera.preview") });
-  cam.append(S.cameraImg);
+  cam.append(S.cameraImg, liveOverlay());
   if (pose) cam.append(h("span", { class: "pose" }, icon(pose === "FACE" ? "user-focus" : "squares-four"), pose === "FACE" ? t("camera.face") : t("camera.tray")));
-  return h("section", { class: "panel cam-panel" }, cam);
+  return h("section", { class: "panel cam-panel" }, cam, liveCaption());
+}
+
+/* ---------------------------------------------------------------- live view, moving on by itself, speaking */
+const SVG_NS = "http://www.w3.org/2000/svg";
+const svg = (tag, attrs) => { const el = document.createElementNS(SVG_NS, tag); for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v); return el; };
+function liveOverlay() {
+  if (!S.liveSvg) S.liveSvg = svg("svg", { class: "live-overlay", "aria-hidden": "true", preserveAspectRatio: "xMidYMid slice" });
+  return S.liveSvg;
+}
+function liveCaption() {
+  if (!S.liveCap) S.liveCap = h("p", { class: "live-cap", role: "status", "aria-live": "polite" });
+  return S.liveCap;
+}
+
+function liveWords(L) {
+  if (!L || !L.kind) return "";
+  if (L.busy) return t("live.checking");
+  if (L.simulated) return L.ready ? t("live.sim_ready") : t("live.sim_wait");
+  if (L.available === false) return t("live.no_camera");
+  const names = (S.status.workflow.txn || {}).class_labels || {};
+  if (L.kind === "face") return L.faces === 1 ? t("live.face_ok") : L.faces > 1 ? t("live.many_faces") : t("live.no_face");
+  if (L.hint === "markers_missing") return L.kind === "hand" ? t("live.no_hand") : t("live.no_tray");
+  if (L.hint === "blurry") return t("live.blurry");
+  if (L.hint === "no_hand") return t("live.no_hand");
+  if (L.hint && L.hint !== "ok") return t("live.unclear");
+  const parts = Object.entries(L.expected || {}).filter(([, n]) => n > 0)
+    .map(([k, n]) => t("live.count", { seen: (L.counts || {})[k] || 0, want: n, name: (names[k] || k).toLowerCase() }));
+  if (L.kind === "tray" && !Object.values(L.expected || {}).some((n) => n > 0)) return L.ready ? t("live.tray_empty") : t("live.tray_not_empty");
+  return (L.ready ? "✓ " : "") + parts.join(", ");
+}
+
+function drawLive(L) {
+  const cap = S.liveCap;
+  const holding = L && L.ready && S.autoSince && PREFS.auto;
+  if (cap) {
+    cap.textContent = [liveWords(L), holding ? t("live.hold") : ""].filter(Boolean).join(" ");
+    cap.classList.toggle("ok", !!(L && L.ready));
+  }
+  const el = S.liveSvg;
+  if (!el) return;
+  el.replaceChildren();
+  if (!L || !L.frame) return;
+  const W = 1000, H = Math.round(1000 * L.frame.h / L.frame.w);
+  el.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  el.classList.toggle("camera-mirrored", !!(S.cameraImg && S.cameraImg.classList.contains("camera-mirrored")));
+  const stroke = L.ready ? "#ffffff" : "#ffd27a";
+  for (const b of L.boxes || []) el.append(svg("rect", { x: b.x * W, y: b.y * H, width: b.w * W, height: b.h * H, rx: 12, fill: "none", stroke, "stroke-width": 5 }));
+  if (L.box) el.append(svg("rect", { x: L.box.x * W, y: L.box.y * H, width: L.box.w * W, height: L.box.h * H, rx: 18, fill: "none", stroke, "stroke-width": 5, "stroke-dasharray": "18 12" }));
+  if (L.quad) el.append(svg("polygon", { points: L.quad.map(([x, y]) => `${x * W},${y * H}`).join(" "), fill: "none", stroke, "stroke-width": 5 }));
+  for (const p of L.pills || []) {
+    el.append(svg("circle", { cx: p.x * W, cy: p.y * H, r: p.r * W + 10, fill: "none", stroke: "#ffffff", "stroke-width": 9 }),
+      svg("circle", { cx: p.x * W, cy: p.y * H, r: p.r * W + 10, fill: "none", stroke: p.color || stroke, "stroke-width": 5 }));
+  }
+}
+
+// Steps that may move on by themselves once the camera has seen the right thing for a moment.
+// Unlocking the tray always needs a press.
+const AUTO_STEPS = ["PERSON_CHECK", "EMPTY_TRAY_CHECK", "DOSE_CHECK", "HAND_CHECK", "COLLECTION_CHECK"];
+const AUTO_HOLD_MS = 1200;
+function autoAdvance(s, L) {
+  const tx = s.workflow.txn;
+  const key = tx ? stepKey(tx) : null;
+  const sig = tx ? `${tx.txn_id}:${key}` : null;
+  if (!PREFS.auto || !tx || !AUTO_STEPS.includes(key) || S.busy || s.workflow.busy || s.workflow.pending_operation ||
+      (tx.blocks || []).some((b) => DEVICE_CODES.includes(b.code)) || !L || !L.kind) { S.autoSince = null; return; }
+  if (!L.ready) {
+    S.autoSince = null;
+    if (S.autoFailed === sig) S.autoRearmed = true; // after a failed try, wait for the view to change first
+    return;
+  }
+  if (S.autoFailed === sig && !S.autoRearmed) return;
+  if (!S.autoSince || S.autoSig !== sig) { S.autoSince = Date.now(); S.autoSig = sig; return; }
+  if (Date.now() - S.autoSince < AUTO_HOLD_MS) return;
+  S.autoSince = null;
+  const run = key === "HAND_CHECK" ? runHand(tx) : runCheck(tx);
+  run.then((r) => { if (!r || r.result !== "PASS") { S.autoFailed = sig; S.autoRearmed = false; } else S.autoFailed = null; });
+}
+
+async function liveLoop() {
+  const s = S.status;
+  try {
+    if (s && S.view === "verify" && s.workflow.txn && !document.hidden && !S.offline) {
+      const L = await fetch("/api/camera/live").then((r) => r.json());
+      S.live = L;
+      drawLive(L);
+      autoAdvance(S.status, L);
+    } else if (S.live) {
+      S.live = null;
+      drawLive(null);
+    }
+  } catch { /* the next poll tries again */ }
+  setTimeout(liveLoop, 300);
+}
+
+/* Each dose step is said aloud once when it appears (and again if a problem shows), through the laptop. */
+function speakStep(s) {
+  const tx = s.workflow.txn;
+  if (!PREFS.voice || !tx || S.view !== "verify") return;
+  const key = stepKey(tx);
+  const blocks = (tx.blocks || []).map((b) => b.code).join(",");
+  const sig = `${tx.txn_id}:${key}:${blocks}`;
+  if (S.spokenSig === sig) return;
+  S.spokenSig = sig;
+  if (["DISPENSING", "RELEASE_PENDING"].includes(key)) return;
+  const text = [t(`stage.${key}.instr`), ...(tx.blocks || []).map(blockText)].join(" ");
+  if (s.laptop_voice && s.laptop_voice.enabled) speak(text, true);
 }
 
 function simVisionControls(s, trayOnly = false) {
@@ -1234,6 +1365,16 @@ function followPanels(s) {
   });
 }
 
+function speakDue(s) {
+  if (!PREFS.voice || !(s.laptop_voice && s.laptop_voice.enabled)) return;
+  const due = s.today.filter((c) => c.reminder && c.reminder.state === "DUE" && c.workflow_state === "NOT_STARTED");
+  const fresh = due.filter((c) => !S.spokenDue.has(c.reminder.reminder_id));
+  if (!fresh.length) return;
+  fresh.forEach((c) => S.spokenDue.add(c.reminder.reminder_id));
+  if (S.firstDueCheck) { S.firstDueCheck = false; return; } // don't announce doses that were already due at page load
+  speak(t("voice.due", { name: fresh.map((c) => c.label).join(", ") }), true);
+}
+
 function notifyFollowups(s) {
   // Announce each follow-up once (screen readers), and as a desktop notification if those are on.
   const fresh = (s.followups || []).filter((c) => !S.followSeen.has(`${c.dose_id}:${c.followup}`));
@@ -1349,7 +1490,8 @@ function onboardSteps(current) {
 function onboardNote(active) {
   if (!onboarding()) return null;
   const name = (S.status && S.status.account && S.status.account.name) || "";
-  const [step, text] = active === "device" ? [3, t("onboard.dispenser")] : [1, t("onboard.face", { name })];
+  const hasFace = !!(S.setup && S.setup.draft && S.setup.draft.person_id);
+  const [step, text] = active === "device" ? [3, t("onboard.dispenser")] : hasFace ? [2, t("onboard.medicines")] : [1, t("onboard.face", { name })];
   return h("section", { class: "panel onboard" }, onboardSteps(step), h("p", { class: "lede" }, text));
 }
 
@@ -2017,7 +2159,7 @@ function detailPanel() {
 
 /* ---------------------------------------------------------------- Dispenser */
 const device = {
-  key: (s) => [{ ...s.device, heartbeat_age_ms: null }, s.simulator, s.vision, s.ai, s.workflow.armed, s.workflow.pending_operation, !!s.workflow.txn, s.camera.mode, s.token_classes, s.demo_mode, s.plan && s.plan.entries,
+  key: (s) => [{ ...s.device, heartbeat_age_ms: null }, s.simulator, s.vision, s.ai, s.workflow.armed, s.config && s.config.hand_check, s.workflow.pending_operation, !!s.workflow.txn, s.camera.mode, s.token_classes, s.demo_mode, s.plan && s.plan.entries,
     s.cartridges, s.look_alike, s.look_alike_blocks, S.fill],
   tick(s) {
     const el = document.getElementById("hb-age");
@@ -2066,7 +2208,7 @@ const device = {
       h("div", { class: "row", style: "margin-top:1.5rem" },
         h("button", { class: "btn btn-danger", disabled: !!S.busy, onclick: () => act("reset", () => api("/api/device/reset", { inspected: resetChk.checked })).then((x) => x && toast("Recovery sent. Arm it again when ready.")) }, icon("arrow-counter-clockwise"), "Run recovery")));
 
-    const blocks = [summary, h("div", { class: "two" }, armPanel, resetPanel), cartridgesPanel(s), pillTypesPanel(s), metricsPanel(s)];
+    const blocks = [summary, h("div", { class: "two" }, armPanel, resetPanel), doseStepsPanel(s), cartridgesPanel(s), pillTypesPanel(s), practicePanel(s), metricsPanel(s)];
     if (s.demo_mode) blocks.push(demoPanel(s));
     if (s.simulator) blocks.push(h("section", { class: "panel" }, h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, icon("caret-right"), "Hardware simulator (for testing)"), h("div", { class: "more-body" }, simPanel(s)))));
     blocks.push(h("section", { class: "panel" }, h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, icon("caret-right"), "Developer and demo mode"), h("div", { class: "more-body" }, devPanel(s)))));
@@ -2173,6 +2315,61 @@ function fillFlow(s, c) {
     }
   }
   return box;
+}
+
+/* Optional dose steps. Showing the pills in the hand is off by default: holding several pills up is hard. */
+function doseStepsPanel(s) {
+  const on = !!(s.config && s.config.hand_check);
+  return h("section", { class: "panel" }, h("h3", {}, "Dose steps"),
+    h("label", { class: "switch", style: "margin-top:.75rem" }, h("span", { class: "row" }, icon("hand-palm"), "Ask to show the pills before taking them"),
+      h("input", { type: "checkbox", role: "switch", checked: on, disabled: !!S.busy,
+        onchange: (e) => act("handcheck", () => api("/api/settings/hand-check", { enabled: e.target.checked }))
+          .then((x) => x && toast(x.hand_check ? "The next dose asks to show the pills." : "Showing the pills is off.")) })),
+    h("p", { class: "switch-help" },
+      "After the tray unlocks, the person holds the pills up to the camera, in the pill dish or on an open palm, before the empty-tray check. ",
+      "Off by default: holding several pills up is hard for many people, and the camera has already counted them in the tray. ",
+      "White pills need the dark pill dish."));
+}
+
+/* Practice the camera checks (nothing is dispensed) and see how reliable each is on this laptop. */
+function practicePanel(s) {
+  const body = h("div", { class: "stack", style: "gap:1rem" }, h("p", { class: "muted" }, "Loading"));
+  const classes = s.token_classes || [];
+  const pill = h("select", { "aria-label": "Pill type" }, classes.map((c) => h("option", { value: c.class_id }, `${c.label} (cartridge ${c.cartridge})`)));
+  const count = h("select", { "aria-label": "How many" }, [0, 1, 2, 3].map((n) => h("option", { value: n, selected: n === 1 }, n === 0 ? "none (empty)" : String(n))));
+  const run = (kind) => act(`practice-${kind}`, () => api("/api/practice/run", kind === "face" ? { kind } : { kind, class_id: pill.value, count: Number(count.value) }))
+    .then((x) => { if (!x) return; toast(x.result === "PASS" ? "Practice check passed." : `Practice check: ${x.message || x.result}`, x.result !== "PASS"); draw(x.summary); });
+  const pct = (a, b) => (b ? `${Math.round((100 * a) / b)}%` : "-");
+  function draw(sm) {
+    const p = sm.practice;
+    const line = (label, e) => h("li", {}, h("span", { class: "strong" }, label), ` ${e.passed} of ${e.runs} passed`,
+      e.recent.length ? h("span", { class: "muted" }, `. Last: ${e.recent.slice(0, 5).map((r) => (r.result === "PASS" ? "✓" : "✗")).join(" ")}`) : null);
+    const face = p.face.similarity;
+    body.replaceChildren(...[
+      h("ul", { class: "plain-list" }, line("Face", p.face), line("Pills in hand or dish", p.hand), line("Tray", p.tray)),
+      s.camera.simulated ? h("p", { class: "muted small" }, "The camera is simulated, so there are no face match scores to tune yet.") : null,
+      face ? h("p", {}, `Face match scores ${face.min}–${face.max} (median ${face.median}); the threshold is ${face.threshold}.`) : null,
+      p.face.advice ? h("p", { class: "note" }, p.face.advice) : null,
+      h("h4", {}, "Real doses so far"),
+      h("table", { class: "counts" }, h("thead", {}, h("tr", {}, h("th", {}, "Check"), h("th", {}, "Passed first try"), h("th", {}, "All tries"))),
+        h("tbody", {}, sm.doses.map((d) => h("tr", {}, h("td", {}, d.label), h("td", { class: "num" }, d.doses ? `${d.first_try} of ${d.doses} (${pct(d.first_try, d.doses)})` : "-"),
+          h("td", { class: "num" }, d.checks ? `${d.passed} of ${d.checks}` : "-"))))),
+      sm.dose_face && sm.dose_face.advice ? h("p", { class: "muted small" }, `From real doses: ${sm.dose_face.advice}`) : null,
+    ].filter(Boolean));
+  }
+  fetch("/api/practice").then((r) => (r.ok ? r.json() : Promise.reject())).then(draw)
+    .catch(() => body.replaceChildren(h("p", { class: "muted" }, "Practice results are not available right now.")));
+  const busy = !!S.busy || !!s.workflow.txn;
+  return h("section", { class: "panel" }, h("div", { class: "panel-head" }, h("h3", {}, "Practice and tuning"),
+      h("button", { class: "btn btn-quiet", disabled: busy, onclick: () => act("practice-clear", () => api("/api/practice/clear", {})).then((x) => x && rerender(true)) }, icon("trash"), "Clear practice results")),
+    h("p", { class: "muted", style: "margin:.4rem 0 1rem" },
+      "Run the camera checks without dispensing anything, in the light and place you will really use, to see how reliable they are before a demo. Nothing here changes a dose."),
+    h("div", { class: "row", style: "flex-wrap:wrap;gap:.75rem;margin-bottom:1rem" },
+      h("button", { class: "btn", disabled: busy, onclick: () => run("face") }, icon("user-focus"), "Practice face check"),
+      pill, count,
+      h("button", { class: "btn", disabled: busy, onclick: () => run("hand") }, icon("hand-palm"), "Practice hand or dish"),
+      h("button", { class: "btn", disabled: busy, onclick: () => run("tray") }, icon("squares-four"), "Practice tray")),
+    body);
 }
 
 function pillTypesPanel(s) {
@@ -2397,7 +2594,9 @@ function cameraLoop() {
   const s = S.status;
   const live = s && !s.camera.simulated;
   const wantPreview = live && ((S.view === "verify" && s.workflow.txn) || S.view === "setup");
-  const role = S.view === "verify" && wantPreview && s.workflow.txn && s.workflow.txn.pose === "TRAY" && s.camera.mode === "dual_camera" ? "tray" : "face";
+  // With the in-box tray camera, tray steps show that camera; everything else shows the laptop camera.
+  const trayStep = s && s.workflow.txn && (s.workflow.txn.pose === "TRAY" || (S.live && S.live.kind === "tray"));
+  const role = S.view === "verify" && wantPreview && trayStep && s.camera.mode === "dual_camera" ? "tray" : "face";
   const mirrorFace = !!wantPreview && (S.view === "setup" || s.workflow.txn.pose === "FACE");
   cameraStream(S.cameraImg, wantPreview ? role : null, mirrorFace);
   cameraStream(S.labelImg, live && S.view === "setup" && S.capturingFor != null ? "face" : null);
@@ -2452,4 +2651,5 @@ renderChat();
 route();
 poll();
 cameraLoop();
+liveLoop();
 faceHintLoop();

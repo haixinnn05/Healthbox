@@ -27,6 +27,9 @@ SETUP = [
     ("/api/labels/read", {"label_id": "deadbeef0000"}),
     ("/api/cartridges/check-pill", {"cartridge": "A"}),
     ("/api/cartridges/fill", {"cartridge": "A", "count": 10}),
+    ("/api/practice/run", {"kind": "face"}),
+    ("/api/practice/clear", {}),
+    ("/api/settings/hand-check", {"enabled": True}),
 ]
 
 
@@ -452,6 +455,6 @@ def test_every_post_route_is_classified(harness):
         "/api/reminders/snooze", "/api/reminders/ack", "/api/reminders/close",
         "/api/doses/self-report", "/api/doses/start", "/api/doses/request", "/api/doses/check",
         "/api/doses/release", "/api/doses/finish", "/api/doses/cancel", "/api/doses/confirm",
-        "/api/doses/hand", "/api/doses/hand-skip",
+        "/api/doses/hand", "/api/doses/hand-skip", "/api/speak",
         "/api/doses/followup-later", "/api/sound/test", "/api/device/stop", "/api/assistant", "/api/sim/hardware", "/api/sim/vision"}
     assert not is_setup_route("GET", "/api/labels/abc/image")

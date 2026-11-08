@@ -28,13 +28,14 @@ from .timeutil import iso
 SETUP_ROUTES = frozenset({
     "/api/enroll", "/api/plans/confirm",
     "/api/device/arm", "/api/device/reset",
-    "/api/tray/calibrate", "/api/tray/rename",
+    "/api/tray/calibrate", "/api/tray/rename", "/api/settings/hand-check",
     "/api/demo/mode", "/api/demo/trigger", "/api/demo/reset",
 })
-SETUP_PREFIXES = ("/api/labels/", "/api/cartridges/")  # every label POST (capture, extract, read); cartridge fills
+SETUP_PREFIXES = ("/api/labels/", "/api/cartridges/", "/api/practice/")  # every label POST (capture, extract, read); cartridge fills
 # Signed out, these reveal the person's medicines or records, so they need sign-in too.
 SIGNED_IN_POSTS = frozenset({"/api/assistant", "/api/doses/request"})
-SIGNED_IN_READS = ("/api/history", "/api/export/", "/api/setup", "/api/metrics", "/api/evidence/", "/api/labels/")
+SIGNED_IN_READS = ("/api/history", "/api/export/", "/api/setup", "/api/metrics", "/api/evidence/", "/api/labels/",
+                   "/api/practice")
 
 
 def needs_sign_in(method: str, path: str) -> bool:

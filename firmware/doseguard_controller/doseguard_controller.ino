@@ -29,7 +29,9 @@ const char* FW_VERSION = "doseguard-0.2";
 
 // ---------------------------------------------------------------- calibration (per channel)
 long STEPS_PER_POCKET[2] = {683, 683};  // 4096 half-steps per rev / pockets; calibrate A and B separately
-const uint32_t STEP_INTERVAL_US = 1200; // 28BYJ-48 half-step speed; slower = more torque
+// 28BYJ-48 half-step interval; slower = more torque. Bench-measured: 12 V clean at 600 us, stalls at 500;
+// 5 V clean at 850, buzzes at 800. Chosen: 850 (raise it if a loaded rotor skips).
+const uint32_t STEP_INTERVAL_US = 850;
 const uint32_t POCKET_TIMEOUT_MS = 4000;
 const int POCKETS_PER_REV[2] = {6, 6};  // pockets between home-switch presses; 0 disables the check
 const long HOMING_MAX_STEPS = 4096 + 512;

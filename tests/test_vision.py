@@ -12,7 +12,7 @@ CLASSES = [{"class_id": c[0], "label": c[1], "cartridge": c[2], "hsv": c[4]} for
 BLUE, ORANGE = (214, 111, 47), (42, 130, 232)  # BGR, matching the demo token colours
 
 
-def tray_image(tokens, drop_marker=None, tilt=True, blur=0, bg=(205, 210, 200)):
+def tray_image(tokens, drop_marker=None, tilt=True, blur=0, bg=(205, 210, 200), first_id=0):
     """tokens: (x, y, bgr) round, or (x, y, bgr, "capsule", angle_deg) in a 640x480 tray area."""
     W, H, M = 800, 640, 60
     img = np.full((H, W, 3), bg, np.uint8)  # matte tray
@@ -21,7 +21,7 @@ def tray_image(tokens, drop_marker=None, tilt=True, blur=0, bg=(205, 210, 200)):
     for i, (cx, cy) in enumerate(corners):
         if i == drop_marker:
             continue
-        m = cv2.cvtColor(cv2.aruco.generateImageMarker(d, i, 70), cv2.COLOR_GRAY2BGR)
+        m = cv2.cvtColor(cv2.aruco.generateImageMarker(d, first_id + i, 70), cv2.COLOR_GRAY2BGR)
         pad = cv2.copyMakeBorder(m, 10, 10, 10, 10, cv2.BORDER_CONSTANT, value=(255, 255, 255))
         s = pad.shape[0] // 2
         img[cy - s:cy + s, cx - s:cx + s] = pad
@@ -209,3 +209,63 @@ def test_real_tray_check_keeps_a_circled_photo_of_the_tray_only(tmp_path):
     (tmp_path / "b").mkdir(exist_ok=True)
     obs2 = asyncio.run(svc2.check_tray({"blue": 1}, "CLASS_COUNTS"))
     assert obs2.reason_code == "TRAY_MARKERS_MISSING" and "photo" not in obs2.details
+
+
+
+# ---------------------------------------------------------------- pill dish and live view
+def dish_image(tokens):
+    """The pill dish: same layout as the tray but markers 4-7 and a dark floor."""
+    return tray_image(tokens, bg=(45, 45, 50), first_id=4)
+
+
+def test_dish_is_counted_and_never_mistaken_for_the_tray(tmp_path):
+    svc = _service(tmp_path, dish_image([(120, 120, BLUE), (300, 200, BLUE)]))
+    classes = svc.store.token_classes()
+    r = svc._hand_analyze(dish_image([(120, 120, BLUE), (300, 200, BLUE)]), [c for c in classes if c["class_id"] == "blue"])
+    assert r["status"] == "ok" and r["source"] == "dish" and r["counts"] == {"blue": 2}
+    # The tray's markers are not the dish, and the dish's markers are not the tray.
+    assert svc.tray._warp(dish_image([]))[1]["status"] == "markers_missing"
+    assert svc.tray._warp(tray_image([]), marker_ids=(4, 5, 6, 7))[1]["status"] == "markers_missing"
+
+
+def test_hand_check_uses_the_dish_and_keeps_its_photo(tmp_path):
+    import asyncio
+    svc = _service(tmp_path, dish_image([(200, 150, BLUE)]))
+    obs = asyncio.run(svc.check_hand({"blue": 1}))
+    assert obs.result == "PASS" and obs.details["source"] == "dish" and obs.method == "dish-markers+hsv"
+    assert (tmp_path / obs.details["photo"]).exists()
+    bad = asyncio.run(svc.check_hand({"blue": 2}))
+    assert bad.result == "FAIL" and bad.reason_code == "HAND_COUNT_MISMATCH" and "Expected 2 blue and saw 1" in bad.message
+
+
+def test_live_view_rings_tray_pills_in_frame_coordinates(tmp_path):
+    import asyncio
+    img = tray_image([(150, 150, BLUE)])
+    svc = _service(tmp_path, img)
+    r = asyncio.run(svc.live("tray", {"blue": 1}))
+    assert r["available"] and r["ready"] is True and r["counts"] == {"blue": 1, "orange": 0}
+    assert len(r["quad"]) == 4 and all(0 <= x <= 1 and 0 <= y <= 1 for x, y in r["quad"])
+    (p,) = r["pills"]
+    assert 0.15 < p["x"] < 0.6 and 0.15 < p["y"] < 0.6 and p["r"] > 0.01
+    assert asyncio.run(svc.live("tray", {"blue": 2}))["ready"] is False
+    empty = asyncio.run(svc.live("tray", {}))
+    assert empty["ready"] is False  # a pill is still there
+
+
+def test_live_view_of_the_dish(tmp_path):
+    import asyncio
+    svc = _service(tmp_path, dish_image([(150, 150, BLUE)]))
+    r = asyncio.run(svc.live("hand", {"blue": 1}))
+    assert r["source"] == "dish" and r["ready"] is True and len(r["pills"]) == 1
+
+
+def test_a_moving_hand_asks_to_hold_still(tmp_path, monkeypatch):
+    """Real practice photos of a moving hand measured 3-6 sharpness; they are not counted (a smeared pill
+    would read as 'saw 0'), the person is asked to hold still instead."""
+    import asyncio
+    svc = _service(tmp_path, tray_image([]))
+    monkeypatch.setattr(svc, "_hand_analyze", lambda img, classes, geometry=False: {"status": "blurry", "source": "palm", "sharpness": 4.0})
+    obs = asyncio.run(svc.check_hand({"blue": 1}))
+    assert obs.result == "NOT_OBSERVED" and obs.reason_code == "HAND_BLURRY" and "Hold your hand still" in obs.message
+    sharp = cv2.cvtColor(tray_image([(100, 100, BLUE)]), cv2.COLOR_BGR2BGRA)[:, :, :3]
+    assert svc._sharpness(sharp) > 8 > svc._sharpness(cv2.GaussianBlur(sharp, (41, 41), 0))

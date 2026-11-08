@@ -117,6 +117,8 @@ class FaceEngine:
 # Tray
 # ------------------------------------------------------------------------------------
 WARP_W, WARP_H, BORDER = 400, 300, 28
+TRAY_IDS = (0, 1, 2, 3)  # tray corner markers: top-left, top-right, bottom-right, bottom-left
+DISH_IDS = (4, 5, 6, 7)  # the small pill dish has its own markers, so it is never mistaken for the tray
 
 
 class TrayInspector:
@@ -130,7 +132,9 @@ class TrayInspector:
         self.settings = settings
 
     # -- geometry ----------------------------------------------------------------
-    def _warp(self, img):
+    def _warp(self, img, marker_ids: tuple = TRAY_IDS, geometry: bool = False):
+        """Find the four corner markers `marker_ids` and return the area inside them, perspective-corrected.
+        With geometry=True, info["_geom"] = (corner points in the image, transform) for overlays."""
         import cv2
         import numpy as np
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -140,19 +144,42 @@ class TrayInspector:
         found = {}
         if ids is not None:
             for c, i in zip(corners, ids.flatten()):
-                if int(i) in (0, 1, 2, 3):
+                if int(i) in marker_ids:
                     found[int(i)] = c.reshape(4, 2).mean(axis=0)
         if len(found) < 4:
             return None, {"status": "markers_missing", "markers": sorted(found)}
-        src = np.array([found[0], found[1], found[2], found[3]], dtype="float32")
+        src = np.array([found[i] for i in marker_ids], dtype="float32")
         dst = np.array([[0, 0], [WARP_W, 0], [WARP_W, WARP_H], [0, WARP_H]], dtype="float32")
-        warped = cv2.warpPerspective(img, cv2.getPerspectiveTransform(src, dst), (WARP_W, WARP_H))
+        M = cv2.getPerspectiveTransform(src, dst)
+        warped = cv2.warpPerspective(img, M, (WARP_W, WARP_H))
         # Focus is measured over the whole warped view: marker edges give texture even when
         # the matte tray floor has none.
         sharp = float(cv2.Laplacian(cv2.cvtColor(warped, cv2.COLOR_BGR2GRAY), cv2.CV_64F).var())
         if sharp < self.settings.blur_threshold:
             return None, {"status": "blurry", "sharpness": round(sharp, 1)}
-        return warped[BORDER:WARP_H - BORDER, BORDER:WARP_W - BORDER], {"sharpness": round(sharp, 1)}
+        info = {"sharpness": round(sharp, 1)}
+        if geometry:
+            info["_geom"] = (src, M)
+        return warped[BORDER:WARP_H - BORDER, BORDER:WARP_W - BORDER], info
+
+    def count_loose(self, roi, classes: list[dict]) -> tuple[dict, list]:
+        """Count pills by colour without the tray's size rules (the dish and the hand are a different size
+        from the tray, so calibrated areas don't apply). Returns (counts, blobs in roi pixels)."""
+        import cv2
+        hsv = cv2.cvtColor(cv2.GaussianBlur(roi, (5, 5), 0), cv2.COLOR_BGR2HSV)
+        area = roi.shape[0] * roi.shape[1]
+        counts, blobs = {}, []
+        for cls in classes:
+            contours, _ = cv2.findContours(self._mask(hsv, cls["hsv"]["ranges"]), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            n = 0
+            for c in contours:
+                a = cv2.contourArea(c)
+                if max(self.settings.tray_min_area_px * 0.5, 0.002 * area) <= a <= 0.2 * area:
+                    (x, y), r = cv2.minEnclosingCircle(c)
+                    blobs.append({"class_id": cls["class_id"], "x": float(x), "y": float(y), "r": float(r)})
+                    n += 1
+            counts[cls["class_id"]] = n
+        return counts, blobs
 
     @staticmethod
     def _shape(c) -> dict:
@@ -363,6 +390,7 @@ class VisionService:
         self._face_operation = asyncio.Lock()
         self._hint_lock = asyncio.Lock()
         self._hint: tuple[str, float, dict] | None = None
+        self._live: tuple | None = None
 
     @property
     def simulated(self) -> bool:
@@ -744,6 +772,104 @@ class VisionService:
         obs.controller_session = self.hardware.session
         return obs
 
+    # -- live view: what the camera sees right now, drawn over the preview ------------------------
+    async def live(self, kind: str, expected: dict[str, int] | None, busy: bool = False) -> dict:
+        """kind: face | hand | tray. Returns shapes in 0..1 frame coordinates (x across, y down) plus a
+        `ready` flag (exactly what this step needs is in view). Display only: the guarded check that
+        follows takes its own frames and decides."""
+        out = {"kind": kind, "ready": False}
+        if busy:
+            return {**out, "busy": True}
+        if self.simulated:
+            return {**out, "simulated": True, "ready": self._sim_ready(kind, expected or {})}
+        role = "tray" if kind == "tray" else "face"
+        async with self._hint_lock:
+            f = await self.camera.frame(role)
+            now = self.clock.monotonic()
+            if f is None or now - f.capture_mono > 1.0:
+                return {**out, "available": False}
+            key = (kind, f.frame_id, dumps(expected or {}))
+            if self._live and self._live[0] == key:
+                return self._live[1]
+            classes = self.store.token_classes()
+            res = await asyncio.to_thread(self._live_analyze, kind, f.image, classes, expected or {})
+            res = {**out, **res, "available": True}
+            self._live = (key, res)
+            return res
+
+    def _sim_ready(self, kind: str, expected: dict) -> bool:
+        if kind == "face":
+            return self.sim["face"] == "recipient"
+        if kind == "hand":
+            return self.sim["hand"] == "shown"
+        tray = self.hardware.sim_tray()
+        if tray is None or self.sim["tray"] != "auto":
+            return self.sim["tray"] == "auto"
+        by_cart = {c["cartridge"]: c["class_id"] for c in self.store.token_classes()}
+        seen: dict[str, int] = {}
+        for cart, n in tray.items():
+            if cart in by_cart:
+                seen[by_cart[cart]] = seen.get(by_cart[cart], 0) + n
+        return all(seen.get(k, 0) == int(v) for k, v in expected.items()) and \
+            all(n == 0 or int(expected.get(k, 0)) > 0 for k, n in seen.items())
+
+    def _live_analyze(self, kind: str, img, classes: list[dict], expected: dict) -> dict:
+        import cv2
+        import numpy as np
+        H, W = img.shape[:2]
+        frame = {"w": W, "h": H}
+        colors = {c["class_id"]: c["color"] for c in classes}
+
+        def back(points, M):  # warped tray-area pixels -> 0..1 frame coordinates
+            pts = np.array([[[p[0] + BORDER, p[1] + BORDER]] for p in points], dtype="float32")
+            inv = cv2.perspectiveTransform(pts, np.linalg.inv(M)).reshape(-1, 2) if len(pts) else []
+            return [[float(x) / W, float(y) / H] for x, y in inv]
+
+        def warped_pills(blobs, M):
+            centres = back([(b["x"], b["y"]) for b in blobs], M)
+            if not blobs:
+                return []
+            (ax, ay), (bx, by) = back([(0, 0), (10, 0)], M)
+            px_per_unit = float(np.hypot((bx - ax) * W, (by - ay) * H)) / 10.0  # frame pixels per warped pixel
+            return [{"x": c[0], "y": c[1], "r": max(0.012, b["r"] * px_per_unit / W), "class_id": b["class_id"],
+                     "color": colors.get(b["class_id"])} for c, b in zip(centres, blobs)]
+
+        if kind == "face":
+            with self.face._lock:
+                small, faces = self.face._detect(img)
+            sh, sw = small.shape[:2]
+            boxes = [{"x": float(r[0]) / sw, "y": float(r[1]) / sh, "w": float(r[2]) / sw, "h": float(r[3]) / sh}
+                     for r in ([] if faces is None else faces)]
+            return {"frame": frame, "boxes": boxes, "faces": len(boxes), "ready": len(boxes) == 1}
+
+        if kind == "tray":
+            roi, info = self.tray._warp(img, TRAY_IDS, geometry=True)
+            if roi is None:
+                return {"frame": frame, "hint": info.get("status")}
+            src, M = info["_geom"]
+            res = self.tray._inspect(roi, classes)
+            pills = warped_pills(res["blobs"], M)
+            want = {c["class_id"]: int(expected.get(c["class_id"], 0)) for c in classes}
+            ready = res["status"] == "ok" and all(res["counts"].get(k, 0) == v for k, v in want.items())
+            return {"frame": frame, "quad": [[float(x) / W, float(y) / H] for x, y in src], "pills": pills,
+                    "counts": res["counts"], "expected": want, "ready": ready, "hint": None if res["status"] == "ok" else res["status"]}
+
+        # hand: only this dose's pill types (other colours also match skin)
+        dose = [c for c in classes if int(expected.get(c["class_id"], 0)) > 0]
+        want = {c["class_id"]: int(expected[c["class_id"]]) for c in dose}
+        r = self._hand_analyze(img, dose, geometry=True)
+        if r.get("status") != "ok":
+            return {"frame": frame, "hint": r.get("status"), "source": r.get("source")}
+        ready = all(r["counts"].get(k, 0) == v for k, v in want.items())
+        base = {"frame": frame, "source": r["source"], "counts": r["counts"], "expected": want, "ready": ready}
+        if r["source"] == "dish":
+            _, blobs, (src, M) = r["_dish"]
+            return {**base, "quad": [[float(x) / W, float(y) / H] for x, y in src], "pills": warped_pills(blobs, M)}
+        (sh, sw, _), (x0, y0, x1, y1), blobs = r["_palm"]
+        return {**base, "box": {"x": x0 / sw, "y": y0 / sh, "w": (x1 - x0) / sw, "h": (y1 - y0) / sh},
+                "pills": [{"x": (x0 + b["x"]) / sw, "y": (y0 + b["y"]) / sh, "r": max(0.012, b["r"] / sw),
+                           "class_id": b["class_id"], "color": colors.get(b["class_id"])} for b in blobs]}
+
     # -- pills in the hand ---------------------------------------------------------------
     async def check_hand(self, expected: dict[str, int]) -> Observation:
         """The person holds the pills on an open palm toward the face camera. A palm is found with the
@@ -772,18 +898,23 @@ class VisionService:
                 else:
                     seen = dict(expected) if scenario == "shown" else {k: max(0, v - 1) for k, v in expected.items()}
                     self._judge_hand(obs, expected, seen, labels)
-            elif not self.palm.available():
-                obs = Observation("HAND_CHECK", "NOT_OBSERVED", "none", "HAND_MODEL_MISSING", message("HAND_MODEL_MISSING"))
             else:
                 frames, err = await self._collect("face", lambda img: self._hand_analyze(img, classes))
-                obs = Observation("HAND_CHECK", "UNCERTAIN", "palm+hsv")
+                obs = Observation("HAND_CHECK", "UNCERTAIN", "dish-or-palm+hsv")
                 self._frame_meta(obs, frames)
                 obs.details["expected"] = expected
                 with_hand = [(f, r) for f, r in frames if r.get("status") == "ok"]
+                blurry = [r for _, r in frames if r.get("status") == "blurry"]
+                if blurry:
+                    obs.details["blurry_frames"] = len(blurry)
                 if err and not frames:
                     obs.result, obs.reason_code = "NOT_OBSERVED", err
+                elif len(blurry) * 2 >= max(1, len(frames)):
+                    obs.result, obs.reason_code = "NOT_OBSERVED", "HAND_BLURRY"
                 elif len(with_hand) < max(1, len(frames) // 2):
-                    obs.result, obs.reason_code = "NOT_OBSERVED", "NO_HAND"
+                    obs.result = "NOT_OBSERVED"
+                    obs.reason_code = "NO_HAND" if self.palm.available() or any(r.get("source") == "dish" for _, r in frames) \
+                        else "HAND_MODEL_MISSING"
                 else:
                     tally: dict[str, int] = {}
                     for _, r in with_hand:
@@ -791,6 +922,11 @@ class VisionService:
                         tally[key] = tally.get(key, 0) + 1
                     best, n = max(tally.items(), key=lambda kv: kv[1])
                     obs.details["frames_with_hand"] = len(with_hand)
+                    sources = [r.get("source") for _, r in with_hand]
+                    obs.details["source"] = max(set(sources), key=sources.count)
+                    if obs.details["source"] == "dish":
+                        obs.method = "dish-markers+hsv"
+                        hard = []  # the dark dish shows any pill colour
                     if n * 2 < len(with_hand):
                         obs.result, obs.reason_code = "UNCERTAIN", "HAND_UNSTABLE"
                     else:
@@ -840,6 +976,15 @@ class VisionService:
         x1, y1 = int(min(W, cx + side / 2)), int(min(H, cy + side / 2))
         return small, (x0, y0, x1, y1) if x1 - x0 > 20 and y1 - y0 > 20 else None
 
+    @staticmethod
+    def _sharpness(roi) -> float:
+        import cv2
+        if roi.size == 0:
+            return 0.0
+        g = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        g = cv2.resize(g, (320, max(1, int(g.shape[0] * 320 / max(1, g.shape[1])))))
+        return float(cv2.Laplacian(g, cv2.CV_64F).var())
+
     def _hand_blobs(self, roi, classes):
         import cv2
         hsv = cv2.cvtColor(cv2.GaussianBlur(roi, (5, 5), 0), cv2.COLOR_BGR2HSV)
@@ -857,18 +1002,53 @@ class VisionService:
             counts[cls["class_id"]] = n
         return counts, blobs
 
-    def _hand_analyze(self, img, classes) -> dict:
+    def _hand_analyze(self, img, classes, geometry: bool = False) -> dict:
+        """The pill dish first (its own markers, any pill colour), then an open palm (colour on skin)."""
+        roi, info = self.tray._warp(img, DISH_IDS, geometry=geometry)
+        if roi is not None:
+            counts, blobs = self.tray.count_loose(roi, classes)
+            out = {"status": "ok", "source": "dish", "counts": counts}
+            if geometry:
+                out["_dish"] = (roi.shape, blobs, info["_geom"])
+            return out
+        if info.get("status") == "blurry":
+            return {"status": "blurry", "source": "dish"}
+        if not self.palm.available():
+            return {"status": "no_hand"}
         small, box = self._hand_region(img)
         if box is None:
             return {"status": "no_hand"}
         x0, y0, x1, y1 = box
-        counts, _ = self._hand_blobs(small[y0:y1, x0:x1], classes)
-        return {"status": "ok", "counts": counts}
+        roi = small[y0:y1, x0:x1]
+        sharp = self._sharpness(roi)
+        if sharp < self.settings.hand_blur_threshold:
+            # A moving hand smears small pills into the skin: don't count it, ask to hold still.
+            return {"status": "blurry", "source": "palm", "sharpness": round(sharp, 1)}
+        counts, blobs = self._hand_blobs(roi, classes)
+        out = {"status": "ok", "source": "palm", "counts": counts, "sharpness": round(sharp, 1)}
+        if geometry:
+            out["_palm"] = (small.shape, box, blobs)
+        return out
 
     def _hand_photo(self, img, classes):
-        """The hand region with each counted pill ringed. Not kept if a face overlaps the region."""
+        """The dish (or the hand region) with each counted pill ringed. A hand photo is not kept if a face
+        overlaps it; the dish photo is only the area inside its markers."""
         import cv2
-        from .evidence import draw_marks
+        from .evidence import SCALE, draw_marks
+        roi, _ = self.tray._warp(img, DISH_IDS)
+        if roi is not None:
+            _, blobs = self.tray.count_loose(roi, classes)
+            out = cv2.resize(roi, (roi.shape[1] * SCALE, roi.shape[0] * SCALE), interpolation=cv2.INTER_CUBIC)
+            by_id, seen, marks = {c["class_id"]: c for c in classes}, {}, []
+            for b in blobs:
+                cls = by_id.get(b["class_id"], {})
+                seen[b["class_id"]] = seen.get(b["class_id"], 0) + 1
+                marks.append({"x": b["x"] * SCALE, "y": b["y"] * SCALE, "r": b["r"] * SCALE, "color": cls.get("color"),
+                              "tag": f"{cls.get('cartridge') or '?'}{seen[b['class_id']]}"})
+            draw_marks(out, marks)
+            return out
+        if not self.palm.available():
+            return None
         small, box = self._hand_region(img)
         if box is None:
             return None

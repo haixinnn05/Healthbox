@@ -581,3 +581,10 @@ select { appearance: none; -webkit-appearance: none; }
   .cart-row .pill-type > .btn { grid-column: 1 / -1; }
 }
 .hist-owner { margin: 1.5rem 0 .25rem; font-size: var(--fs-body); color: var(--ink-2); }
+
+/* ---------- Live view over the camera, practice ---------- */
+.live-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.live-overlay.camera-mirrored { transform: scaleX(-1); }
+.live-cap { min-height: 1.6em; font-weight: 700; color: var(--ink-2); }
+.live-cap.ok { color: var(--ink); }
+.plain-list { list-style: none; padding: 0; margin: 0; display: grid; gap: .4rem; }
