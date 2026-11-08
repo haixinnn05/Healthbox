@@ -557,3 +557,27 @@ select { appearance: none; -webkit-appearance: none; }
 .arc .arc-now.pos-right { transform: translate(2.7rem, -50%); }
 .arc .arc-now.at-end.pos-below { transform: translate(calc(-100% + 1.4rem), 2.4rem); }
 .arc .arc-now.at-start.pos-below { transform: translate(-1.4rem, 2.4rem); }
+
+/* ---------- Photo proof, collection watch, cartridges ---------- */
+.proof { margin: 1rem 0 0; }
+.proof img { display: block; width: 100%; max-width: 30rem; height: auto; border-radius: var(--r-control); border: 1px solid var(--line-2); background: var(--cloud-2); }
+.proof figcaption { margin-top: .4rem; font-size: var(--fs-small); color: var(--ink-3); display: flex; flex-wrap: wrap; gap: .4rem; align-items: center; }
+.proof-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(12rem, 1fr)); gap: 1rem; margin-top: .5rem; }
+.proof-grid .proof { margin: 0; }
+.watch-box { margin: 1.1rem 0 1.4rem; padding: 1rem 1.2rem; border-radius: 18px; background: var(--cloud-2); }
+.watch-box h3 { font-size: var(--fs-body); }
+.watch-box .evidence { margin-top: .5rem; padding-top: 0; border-top: 0; }
+.watch-box .muted { margin-top: .6rem; }
+.cart-row { border-top: 1px solid var(--line); }
+.cart-row:first-of-type { border-top: 0; }
+.cart-row .pill-type { border-top: 0; }
+.fill-flow { margin: 0 0 1rem; padding: 1rem 1.2rem; border-radius: 18px; background: var(--cloud-2); }
+.fill-meds { list-style: none; padding: 0; margin: .5rem 0 0; display: grid; gap: .6rem; }
+.fill-meds li { display: flex; gap: .8rem; align-items: center; }
+.fill-meds img { width: 4.5rem; height: 3.5rem; object-fit: cover; border-radius: 10px; border: 1px solid var(--line-2); }
+.fill-flow input[type="number"] { min-height: 48px; padding: .4rem .75rem; border-radius: var(--r-control); border: 2px solid var(--line-2); background: var(--cloud); font: inherit; }
+@media (max-width: 40rem) {
+  .cart-row .pill-type { grid-template-columns: auto 1fr; }
+  .cart-row .pill-type > .btn { grid-column: 1 / -1; }
+}
+.hist-owner { margin: 1.5rem 0 .25rem; font-size: var(--fs-body); color: var(--ink-2); }

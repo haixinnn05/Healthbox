@@ -61,8 +61,20 @@ MESSAGES: dict[str, str] = {
     "AS_NEEDED_IN_PROGRESS": "A dose of this medicine is already being prepared. Finish or cancel it first.",
     "UNKNOWN_ENTRY": "This medicine is not in the confirmed plan. Refresh and try again.",
     "NOT_AS_NEEDED": "This medicine follows a schedule. Take it when its reminder is due.",
+    # Collection and taking (camera observations only; never proof of swallowing)
+    "COLLECTED_BY_OTHER": "Someone other than you was in view while the tray was open.",
+    "COLLECTOR_NOT_SEEN": "Your face was not in view while the tray was open, so it is not known who took the pills out.",
+    "ACTION_NOT_SEEN": "No hand-to-mouth movement was seen. If you took your medicine, press I took it.",
+    "ACTION_UNAVAILABLE": "The camera could not watch for taking (simulated face, missing models or no enrolled face).",
+    # Pill types and cartridges
+    "LOOK_ALIKE_PILLS": "Two pill types look too alike for the tray camera. Calibrate them with clearly different pills in Setup, Dispenser.",
+    "FILL_CHECK_REQUIRED": "Check one pill from the bottle with the camera before recording a fill.",
+    "FILL_NO_PILL": "No pill found in the tray. Put one pill from the bottle in the tray, in view of the camera.",
+    "FILL_TOO_MANY": "More than one pill is in the tray. Leave exactly one pill from the bottle.",
+    "FILL_WRONG_PILL": "This pill does not match the pill type set up for this cartridge. Do not fill the cartridge with it.",
     # Account (guards Setup only)
     "SETUP_LOCKED": "Setup is locked. Enter your password to make changes.",
+    "SIGNED_OUT": "Sign in to see this. A dose that is due can still be taken without signing in.",
     "WRONG_PASSWORD": "That password is not right. Try again.",
     "TOO_MANY_ATTEMPTS": "Too many wrong passwords. Wait a minute, then try again.",
     "ACCOUNT_EXISTS": "An account already exists on this laptop.",

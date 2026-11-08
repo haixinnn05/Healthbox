@@ -42,8 +42,21 @@ is hashed with scrypt, never logged, never sent anywhere and never shown to the 
 calibration and demo controls. Taking a dose, reminders, STOP and the assistant never ask for it; the face check
 already guards the dose.
 
-- Setup stays unlocked for 15 minutes after the last Setup change (`SETUP_UNLOCK_MINUTES`). **Lock** locks it
-  at once, and restarting the server always locks it.
+- **Signing in and out.** The account is made with a first and last name. You stay signed in until **Sign out**
+  (Setup) or a server restart; `SETUP_UNLOCK_MINUTES` > 0 signs out after that many minutes without a Setup change.
+  Signed out, the page shows only a due or in-progress dose (which can be taken with the face check), follow-ups
+  and the sign-in panel ("Welcome back, Jackson" and the password). Medicines, as-needed requests, history, photos,
+  Ask and Setup need sign-in, and the server refuses them with 423 `SIGNED_OUT` (`SIGNED_IN_READS` and
+  `SIGNED_IN_POSTS` in `app/account.py`); `GET /api/status` leaves out the plan, other doses and cartridges.
+  "Not Jackson?" explains the hand-over below. A forgotten password never blocks a due dose.
+- **One person per Healthbox.** The account's name is the only name: the face is enrolled under it, and enrolling
+  again ("Retake my face") replaces that person's face and keeps their plan. Every plan belongs to that person.
+- **Someone else will use this Healthbox** (Setup → Change plan → Your face): with the password, the current name
+  typed out, and both cartridges and the tray emptied, it removes the person's face, account, plan and pending
+  reminders, forgets the cartridge counts and arming, and turns demo mode off. Their history and tray photos stay,
+  shown in History under "Earlier: <name>", and never count toward the new person's as-needed limits. The welcome
+  setup then starts for the new person. `POST /api/account/handover {request_id, password, confirm_name, emptied}`
+  (refused during a dose).
 - Five wrong passwords within five minutes pause password attempts for one minute.
 - **Forgot the password?** With the laptop in front of you, run
   `.venv/bin/python scripts/reset_account.py` and type `RESET`. It removes only the account (name and password);
@@ -66,7 +79,34 @@ It only pre-fills the form: every entry is still confirmed by the person.
 ### Simulating failures
 Setup → Dispenser → Hardware simulator: double feed, empty feed, wrong pill type, motor stall, lost completion, lost
 command, USB unplug, power cycle, forced door. Dose steps (simulated camera): unknown person, two faces, nobody,
-touching tokens, hidden markers, blur.
+touching tokens, hidden markers, blur, and whether a hand-to-mouth movement happens after release.
+
+### Proof, who collected, and taking
+- **Tray photos.** Every tray check (empty tray, dose count, collection, cartridge fill) keeps one photo of the tray
+  area with each counted pill ringed and tagged (A1, B1...). It shows under "What the camera checked" and in History.
+  Only the perspective-corrected tray inside the four markers is stored, never a face, in `data/evidence/`
+  (gitignored); the newest `EVIDENCE_KEEP` (400) are kept. With the simulated camera the picture is drawn and
+  labelled SIMULATED. `GET /api/evidence/<name>.jpg` serves them.
+- **Who emptied the tray.** From release until the collection check, the face camera is sampled a few times a second.
+  The result is stored as `COLLECTED_BY`: `RECIPIENT`, `OTHER_PERSON` (two faces, or a stranger more often than you)
+  or `NOT_SEEN`. Someone else being in view does not undo the dose (the pills are out); it is recorded and shown.
+- **Hand to mouth.** The same watch looks for a palm (MediaPipe palm detector from the OpenCV Zoo, run with
+  `cv2.dnn`) near the enrolled person's mouth (YuNet landmarks), after the hand was first seen away from it, in at
+  least 2 samples within 2 s, with the face matched. It keeps watching for `ACTION_WATCH_S` (180 s) after collection.
+  Stored as `ACTION_OBSERVED` (`ingestion: UNVERIFIED`), separate from the person's own "I took it". It never means
+  swallowed. Without `palm_detection_mediapipe_2023feb.onnx` it records `ACTION_UNAVAILABLE`.
+- **Follow-up.** `FOLLOWUP_MINUTES` (5) after release, a dose with no "I took it" and no movement seen shows
+  "Did you take your ...?" on Today (or "... is still in the tray" if it was never collected), with "Yes, I took it"
+  and "Not yet" (`POST /api/doses/followup-later`, asks again in 5 minutes). It stops after 12 hours.
+- **Look-alike pill types.** Counting is by colour, so if one type's colour falls in another's range, one pill would
+  count as both. Calibration warns, Setup → Dispenser shows it, and with the real tray camera doses can't start
+  (`LOOK_ALIKE_PILLS`) until the types are recalibrated with clearly different pills.
+- **Filling a cartridge.** Setup → Dispenser → Cartridges → Fill cartridge: compare the bottle with the saved label
+  photo, put one pill from it in the tray, and the camera checks it matches that cartridge's pill type
+  (`POST /api/cartridges/check-pill`). Only then can the count be saved (`POST /api/cartridges/fill`, within 15
+  minutes of a passing check). Both are Setup routes (password).
+- **Pill count.** The count drops by the quantity of each finished dispense motion, so it is an estimate. Today shows
+  "running low" at 3 or fewer, or less than two days of scheduled doses, and "may be empty" at 0.
 
 ### Status and metrics
 - The sky always shows reminder sound, the dispenser (ready, not armed, not connected, needs checking, simulated),
@@ -116,7 +156,7 @@ Copy `.env.example` to `.env`. Main switches:
 
 ### Real camera
 ```bash
-.venv/bin/python scripts/download_models.py      # YuNet + SFace from the OpenCV Zoo
+.venv/bin/python scripts/download_models.py      # YuNet, SFace and the palm detector from the OpenCV Zoo
 .venv/bin/python scripts/make_tray_markers.py    # docs/tray-markers.png, print and stick at tray corners
 CAMERA_MODE=single_laptop ./run.sh
 ```
@@ -178,6 +218,9 @@ reminder-only never touching hardware, stale plans, scheduled behaviour unchange
 every Setup route locked and unlocked, everyday actions never needing the password, sliding expiry, restart locking,
 replays, the reset script, and the password and hash never appearing in responses, events or exports.
 `tests/test_label_schedule.py` covers the label-directions parser, including unclear text giving no suggestion.
+`tests/test_taking.py` covers tray photos (served, pruned, never kept without markers, removed on demo reset), who
+emptied the tray, the hand-to-mouth rules (away first, two samples, stale mouth, strangers, missing model), the
+follow-up and "Not yet", look-alike pill types blocking a start, and cartridge fill checks and the pill count.
 
 ### As-needed medicine
 A plan entry is `"schedule": "SCHEDULED"` (default, recurring times) or `"AS_NEEDED"` (no times, plus
@@ -217,5 +260,6 @@ docs/              protocol for the firmware, tray markers
 ## Safety limits (say these in the demo)
 - Face matching here is a prototype check, not secure identity. Photo spoofing is untested.
 - Token colour does not establish real medication identity or strength. Use non-ingestible demo tokens; nobody puts them in their mouth.
-- Released, Collection observed and User reported taken are separate. DoseGuard never verifies swallowing.
+- Released, Collection observed, Hand-to-mouth seen and User reported taken are separate. DoseGuard never verifies swallowing.
+- "Hand to mouth seen" is a palm near the mouth of the matched face. It can be fooled (scratching your chin) and it is never proof of taking.
 - After STOP, a fault or an unknown outcome, nothing replays. A person inspects and runs supervised recovery.

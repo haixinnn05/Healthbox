@@ -30,6 +30,7 @@ COUNTED_SQL = (
     " FROM doses d LEFT JOIN transactions t ON t.txn_id=d.txn_id"
     " WHERE d.schedule='AS_NEEDED' AND d.entry_key=? AND d.demo=?"
     " AND (d.workflow_state!='NOT_STARTED' OR d.self_report IS NOT NULL)"
+    " AND d.plan_version_id NOT IN (SELECT plan_version_id FROM plan_versions WHERE handed_over_at IS NOT NULL)"
 )
 
 
@@ -73,7 +74,9 @@ def evaluate(store: Store, entry: dict, demo: int, now: datetime) -> dict:
         reason = "AS_NEEDED_IN_PROGRESS"
     next_at = max(waits) if waits else None
     latest = store.q1("SELECT dose_id, workflow_state, outcome, collection, self_report, txn_id, created_at"
-                      " FROM doses WHERE schedule='AS_NEEDED' AND entry_key=? AND demo=? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                      " FROM doses WHERE schedule='AS_NEEDED' AND entry_key=? AND demo=?"
+                      " AND plan_version_id NOT IN (SELECT plan_version_id FROM plan_versions WHERE handed_over_at IS NOT NULL)"
+                      " ORDER BY created_at DESC, rowid DESC LIMIT 1",
                       (entry["entry_key"], demo))
     return {
         "taken_last_24h": len(in_window),

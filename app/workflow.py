@@ -15,6 +15,7 @@ import json
 import logging
 import secrets
 import uuid
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from . import as_needed
@@ -26,7 +27,8 @@ from .reasons import block, message
 from .reminders import ReminderService
 from .store import Store, dumps
 from .timeutil import iso, parse
-from .vision import Observation, VisionService
+from .taking import collector
+from .vision import Observation, VisionService, look_alike_pairs
 
 log = logging.getLogger("doseguard.workflow")
 
@@ -42,7 +44,7 @@ STAGES = {
     "DOSE_CHECK": ("Dose check", "TRAY", "Check dose"),
     "RECIPIENT_RECHECK": ("Recipient recheck and release", "FACE", "Recheck and release"),
     "RELEASE_PENDING": ("Releasing", "FACE", None),
-    "COLLECTION_CHECK": ("Collection", "TRAY", "Check collection"),
+    "COLLECTION_CHECK": ("Collection", "FACE", "Check collection"),
     "FAULT": ("Supervised recovery needed", None, None),
     "UNCERTAIN": ("Outcome uncertain", None, None),
 }
@@ -65,20 +67,114 @@ class WorkflowEngine:
         self.busy: str | None = None
         self.last_error: dict | None = None
         self._task: asyncio.Task | None = None
+        self._watch_task: asyncio.Task | None = None
         hardware.set_listener(self.on_device_event)
 
     # ------------------------------------------------------------------ lifecycle
     def start(self) -> None:
         self.reconcile_startup()
         self._task = asyncio.create_task(self._watch(), name="workflow-watch")
+        self._watch_task = asyncio.create_task(self._collection_watch(), name="collection-watch")
 
     async def stop_task(self) -> None:
-        if self._task:
-            self._task.cancel()
+        for task in (self._task, self._watch_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        self.vision.stop_watch()
+
+    # ------------------------------------------------------------------ collection watch
+    async def _collection_watch(self) -> None:
+        """Keeps the vision watch on the right dose: from release until collection, then up to
+        ACTION_WATCH_S more for the hand-to-mouth movement. Runs apart from the deadline loop so a
+        slow camera can never delay a motion timeout."""
+        while True:
+            await asyncio.sleep(0.1)
             try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
+                self._manage_watch()
+            except Exception:
+                log.exception("collection watch management failed")
+
+    def _watch_target(self) -> dict | None:
+        t = self.active_txn()
+        if t:
+            return t if t["state"] == "COLLECTION_CHECK" else None
+        row = self.store.q1("SELECT * FROM transactions WHERE state='COMPLETE' ORDER BY updated_at DESC LIMIT 1")
+        if not row:
+            return None
+        ids = _ids(row)
+        pending = self.store.q1(f"SELECT COUNT(*) AS n FROM doses WHERE dose_id IN ({_qs(ids)}) AND action IS NULL", ids)
+        return row if pending and pending["n"] else None
+
+    def _manage_watch(self) -> None:
+        t = self._watch_target()
+        w = self.vision.watch
+        if w and not w.action_saved and (t is None or w.txn_id != t["txn_id"]):
+            # Leaving a finished dose (window over, or a new dose started): store what was seen.
+            old = self.store.q1("SELECT * FROM transactions WHERE txn_id=?", (w.txn_id,))
+            if old and old["state"] == "COMPLETE":
+                self._record_action(old, w, "PASS" if w.tracker.observed_at is not None else "NOT_OBSERVED")
+        if t is None:
+            if w and not w.stopped:
+                self.vision.stop_watch()
+            return
+        if not w or w.txn_id != t["txn_id"]:
+            person = self.store.person(json.loads(t["expected_json"]).get("person_id"))
+            w = self.vision.start_watch(t["txn_id"], person)
+        if w.action_saved:
+            return
+        if w.tracker.observed_at is not None:
+            self._record_action(t, w, "PASS")
+        elif t["state"] == "COMPLETE" and (self.clock.now() - parse(t["updated_at"])).total_seconds() >= self.settings.action_watch_s:
+            self._record_action(t, w, "NOT_OBSERVED")
+
+    def _record_action(self, t: dict, w, result: str) -> None:
+        """Store the taking observation. PASS means a hand-to-mouth movement was seen, nothing more."""
+        w.action_saved = True
+        if result == "PASS":
+            code, msg = None, "A hand moved to your mouth while your face was in view. This does not show swallowing."
+        elif not w.available:
+            code, msg = "ACTION_UNAVAILABLE", message("ACTION_UNAVAILABLE")
+        elif not w.palms_available:
+            code, msg = "ACTION_UNAVAILABLE", "The hand model is missing. Run scripts/download_models.py."
+        else:
+            code, msg = "ACTION_NOT_SEEN", message("ACTION_NOT_SEEN")
+        obs = Observation("ACTION_OBSERVED", result, "simulated" if w.simulated else "yunet+sface+palm", code, msg,
+                          details={"samples": w.samples, "counts": dict(w.counts), "ingestion": "UNVERIFIED",
+                                   "observed_at": w.action_at_wall, **w.tracker.details},
+                          simulated=w.simulated)
+        t = dict(t)
+        t["plan_version_id"] = json.loads(t["expected_json"]).get("plan_version_id")
+        with self.store.tx() as conn:
+            self._save_obs(conn, t, obs)
+            conn.execute(f"UPDATE doses SET action=?, updated_at=? WHERE dose_id IN ({_qs(_ids(t))})",
+                         ("OBSERVED" if result == "PASS" else "NOT_OBSERVED", self.store.now(), *_ids(t)))
+            self.store.event(conn, "ACTION_OBSERVED" if result == "PASS" else "ACTION_NOT_OBSERVED", txn_id=t["txn_id"],
+                             reason=code, details={"ingestion": "UNVERIFIED", "simulated": w.simulated})
+        if t["state"] == "COMPLETE" and self.vision.watch is w:
+            self.vision.stop_watch()
+
+    def _record_collector(self, conn, t: dict) -> str:
+        """Who was in view while the tray was unlocked and emptied."""
+        w = self.vision.watch if self.vision.watch and self.vision.watch.txn_id == t["txn_id"] else None
+        if w is None or not w.available:
+            who, code = "NOT_SEEN", "ACTION_UNAVAILABLE"
+            counts, samples, sim = {}, 0, self.vision.simulated
+        else:
+            counts, samples, sim = dict(w.counts), w.samples, w.simulated
+            who = collector(counts, self.settings.collector_min_samples)
+            code = {"OTHER_PERSON": "COLLECTED_BY_OTHER", "NOT_SEEN": "COLLECTOR_NOT_SEEN"}.get(who)
+        result = {"RECIPIENT": "PASS", "OTHER_PERSON": "FAIL"}.get(who, "NOT_OBSERVED")
+        obs = Observation("COLLECTED_BY", result, "simulated" if sim else "yunet+sface", code,
+                          message(code) if code else None, details={"collector": who, "counts": counts, "samples": samples},
+                          simulated=sim)
+        self._save_obs(conn, t, obs)
+        conn.execute(f"UPDATE doses SET collected_by=?, updated_at=? WHERE dose_id IN ({_qs(_ids(t))})",
+                     (who, self.store.now(), *_ids(t)))
+        return who
 
     async def _watch(self) -> None:
         while True:
@@ -221,6 +317,11 @@ class WorkflowEngine:
             raise WorkflowError(status, blocks[0]["code"], blocks[0]["message"], reason_codes=[b["code"] for b in blocks])
         if not plan or not self.store.person(plan["person_id"]):
             raise WorkflowError(409, "NOT_ENROLLED")
+        if not self.vision.tray_simulated:
+            pairs = look_alike_pairs(self.store.token_classes())
+            if pairs:
+                # Counting is by colour: overlapping types would be counted twice or swapped unnoticed.
+                raise WorkflowError(409, "LOOK_ALIKE_PILLS", pairs[0]["message"], reason_codes=["LOOK_ALIKE_PILLS"])
 
     def _tray_totals(self, group: list[dict]) -> tuple[dict, dict]:
         by_class: dict[str, int] = {}
@@ -406,6 +507,7 @@ class WorkflowEngine:
                 elif t["state"] == "DOSE_CHECK":
                     self._set_state(conn, t, "RECIPIENT_RECHECK")
                 elif t["state"] == "COLLECTION_CHECK":
+                    self._record_collector(conn, t)
                     self._complete(conn, t, "OBSERVED")
                 else:
                     self._set_blocks(conn, txn_id, [])
@@ -413,6 +515,9 @@ class WorkflowEngine:
                 await self._begin_dispense(t)
             if obs.result == "PASS" and stage == "COLLECTION_CHECK":
                 await self._lock_latch(t)
+                w = self.vision.watch
+                if w and w.txn_id == txn_id and w.tracker.observed_at is not None and not w.action_saved:
+                    self._record_action(self._txn(txn_id), w, "PASS")  # seen already: record it with the collection
             t = self._txn(txn_id)
             return {"txn_id": txn_id, "observation_id": obs_id, "kind": kind, "result": obs.result,
                     "reason_codes": [obs.reason_code] if obs.reason_code else [], "message": obs.message, "state": t["state"]}
@@ -644,6 +749,21 @@ class WorkflowEngine:
             return {"dose_id": dose_id, "self_report": "TAKEN_UNVERIFIED"}
         return await self._idempotent(request_id, "doses/confirm", fn)
 
+    async def followup_later(self, request_id: str, dose_id: str) -> dict:
+        """'Not yet': ask again about this released dose in FOLLOWUP_MINUTES. Changes nothing else."""
+        async def fn():
+            d = self.store.q1("SELECT * FROM doses WHERE dose_id=?", (dose_id,))
+            if not d or d["demo"] != self.store.demo:
+                raise WorkflowError(404, "NOT_FOUND", "Dose not found.")
+            if d["workflow_state"] not in ("RELEASED", "COMPLETE") or d["self_report"]:
+                raise WorkflowError(409, "INVALID_TRANSITION", "There is nothing to follow up for this dose.")
+            after = iso(self.clock.now() + timedelta(minutes=self.settings.followup_minutes))
+            with self.store.tx() as conn:
+                conn.execute("UPDATE doses SET followup_after=?, updated_at=? WHERE dose_id=?", (after, self.store.now(), dose_id))
+                self.store.event(conn, "FOLLOWUP_LATER", dose_id=dose_id, txn_id=d["txn_id"], details={"next": after})
+            return {"dose_id": dose_id, "followup_after": after}
+        return await self._idempotent(request_id, "doses/followup-later", fn)
+
     # ------------------------------------------------------------------ device control
     async def stop(self, request_id: str) -> dict:
         sent = await self.hw.stop_now()  # first, ahead of any queued work or lock
@@ -739,6 +859,12 @@ class WorkflowEngine:
                                  (f"rev={evt.get('rev')}", self.store.now(), cid))
                     self.store.event(conn, "CYCLE_DONE", txn_id=p["txn_id"], details={"channel": evt.get("c"), "rev": evt.get("rev"),
                                                                                        "note": "motion finished; token delivery not proven"})
+                    # Pill count is an estimate: one finished motion of n units means about n pills left the cartridge.
+                    cmd = conn.execute("SELECT channel, payload_json FROM commands WHERE command_id=?", (cid,)).fetchone()
+                    if cmd:
+                        n = int(json.loads(cmd["payload_json"]).get("n", 0))
+                        conn.execute("UPDATE cartridge_stock SET count=MAX(0, count-?), updated_at=? WHERE cartridge=? AND count IS NOT NULL",
+                                     (n, self.store.now(), cmd["channel"]))
                 await self._send_next_dispense(p["txn_id"])
             else:
                 self.store.log("UNEXPECTED_DEVICE_EVENT", details=evt)
@@ -750,6 +876,8 @@ class WorkflowEngine:
                     conn.execute("UPDATE commands SET state='DONE', completed_at=? WHERE command_id=?", (self.store.now(), cid))
                     t = dict(conn.execute("SELECT * FROM transactions WHERE txn_id=?", (p["txn_id"],)).fetchone())
                     self._set_state(conn, t, "COLLECTION_CHECK")
+                    follow = iso(self.clock.now() + timedelta(minutes=self.settings.followup_minutes))
+                    conn.execute(f"UPDATE doses SET followup_after=? WHERE dose_id IN ({_qs(_ids(t))})", (follow, *_ids(t)))
                     for did in _ids(t):
                         self.reminders.close_for_dose(conn, did, "RELEASED")
                     self.store.event(conn, "RELEASED", txn_id=t["txn_id"], details={"rev": evt.get("rev")})
@@ -842,13 +970,14 @@ class WorkflowEngine:
         classes = self.store.class_by_id()
         label, pose, action = STAGES.get(t["state"], (t["state"], None, None))
         obs = {}
-        for kind in ("FACE_MATCH", "TRAY_EMPTY", "CLASS_COUNTS"):
+        for kind in ("FACE_MATCH", "TRAY_EMPTY", "CLASS_COUNTS", "ACTION_OBSERVED"):
             o = self._latest_obs(t["txn_id"], kind)
             if o:
                 age = self._obs_age_s(o)
                 obs[kind] = {"result": o["result"], "reason_code": o["reason_code"], "message": o["details"].get("message"),
                              "observed": o["details"].get("observed"), "simulated": bool(o["simulated"]),
-                             "age_s": None if age is None else round(age, 1), "tray_revision": o["tray_revision"]}
+                             "age_s": None if age is None else round(age, 1), "tray_revision": o["tray_revision"],
+                             "photo": o["details"].get("photo"), "obs_id": o["obs_id"]}
         doses = self.store.q(f"SELECT dose_id, label, strength_text, quantity, class_id, cartridge, schedule FROM doses WHERE dose_id IN ({_qs(_ids(t))})",
                              _ids(t))
         blocks = json.loads(t["blocks_json"] or "[]")
@@ -866,6 +995,7 @@ class WorkflowEngine:
             "class_colors": {c: v["color"] for c, v in classes.items()},
             "observations": obs, "blocks": blocks, "release_available": release_available,
             "can_cancel": not t["dispense_reserved_at"], "created_at": t["created_at"],
+            "watch": self.vision.watch_view(t["txn_id"]),
         }
         return out
 

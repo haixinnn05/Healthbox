@@ -1,4 +1,5 @@
-"""Download the pretrained OpenCV Zoo face models (YuNet detector, SFace recognizer).
+"""Download the pretrained OpenCV Zoo models: YuNet (face detector), SFace (face recognizer)
+and the MediaPipe palm detector (used only to notice a hand moving to the mouth after release).
 
 Run once:  .venv/bin/python scripts/download_models.py
 Files go to models/. Nothing is trained; these are used as-is."""
@@ -14,6 +15,7 @@ BASE = "https://github.com/opencv/opencv_zoo/raw/main/models"
 FILES = {
     "face_detection_yunet_2023mar.onnx": f"{BASE}/face_detection_yunet/face_detection_yunet_2023mar.onnx",
     "face_recognition_sface_2021dec.onnx": f"{BASE}/face_recognition_sface/face_recognition_sface_2021dec.onnx",
+    "palm_detection_mediapipe_2023feb.onnx": f"{BASE}/palm_detection_mediapipe/palm_detection_mediapipe_2023feb.onnx",
 }
 
 
@@ -42,7 +44,8 @@ def main() -> int:
     import cv2
     cv2.FaceDetectorYN.create(str(MODELS / "face_detection_yunet_2023mar.onnx"), "", (320, 320))
     cv2.FaceRecognizerSF.create(str(MODELS / "face_recognition_sface_2021dec.onnx"), "")
-    print(f"loaded both models with OpenCV {cv2.__version__}")
+    cv2.dnn.readNet(str(MODELS / "palm_detection_mediapipe_2023feb.onnx"))
+    print(f"loaded all three models with OpenCV {cv2.__version__}")
     return 0
 
 

@@ -10,7 +10,7 @@ from conftest import rid
 from test_labels import png_bytes
 
 NAME, PW, PW2 = "Zelda Quokka", "correct horse 42", "battery staple 99"
-ACCOUNT_KEYS = {"exists", "name", "unlocked", "unlocked_until", "locked_out_until"}
+ACCOUNT_KEYS = {"exists", "name", "first_name", "unlocked", "unlocked_until", "locked_out_until"}
 
 # (path, body) for every Setup route. Bodies are minimal; the lock is checked before the body is read.
 SETUP = [
@@ -25,6 +25,8 @@ SETUP = [
     ("/api/demo/reset", {}),
     ("/api/labels/capture", {}),
     ("/api/labels/read", {"label_id": "deadbeef0000"}),
+    ("/api/cartridges/check-pill", {"cartridge": "A"}),
+    ("/api/cartridges/fill", {"cartridge": "A", "count": 10}),
 ]
 
 
@@ -57,8 +59,8 @@ def account(h):
 def test_no_account_keeps_setup_open(harness):
     h = harness()
     a = account(h)
-    assert a == {"exists": False, "name": None, "unlocked": False, "unlocked_until": None, "locked_out_until": None}
-    assert h.status()["account"] == {"exists": False, "name": None, "unlocked": False}
+    assert a == {"exists": False, "name": None, "first_name": None, "unlocked": False, "unlocked_until": None, "locked_out_until": None}
+    assert h.status()["account"] == {"exists": False, "name": None, "first_name": None, "unlocked": False}
     h.post("/api/enroll", {"request_id": rid(), "label": "T", "consent": True})
     assert upload(h).status_code == 200
     h.post("/api/tray/rename", {"request_id": rid(), "class_id": "blue", "label": "Blue"})
@@ -72,7 +74,7 @@ def test_create_unlocks_and_status_shows_account(harness):
     a = account(h)
     assert set(a) == ACCOUNT_KEYS and a["unlocked"] and a["unlocked_until"].startswith("2026-11-07T13:15:00")
     st = h.status()["account"]
-    assert st == {"exists": True, "name": NAME, "unlocked": True}
+    assert st == {"exists": True, "name": NAME, "first_name": "Zelda", "unlocked": True}
 
 
 def test_duplicate_create_is_409(harness):
@@ -84,7 +86,7 @@ def test_duplicate_create_is_409(harness):
 
 
 @pytest.mark.parametrize("name,password,field", [
-    ("   ", PW, "name"), ("x" * 41, PW, "name"), (NAME, "short7!", "password"), (NAME, "y" * 129, "password")])
+    ("   ", PW, "name"), ("x" * 61, PW, "name"), (NAME, "short7!", "password"), (NAME, "y" * 129, "password")])
 def test_create_validation(harness, name, password, field):
     h = harness()
     r = h.c.post("/api/account/create", json={"request_id": rid(), "name": name, "password": password}, headers=h.h)
@@ -265,16 +267,21 @@ def test_everyday_actions_never_need_the_password(harness):
     h.post("/api/reminders/ack", {"request_id": rid(), "reminder_id": dev["reminder"]["reminder_id"]})
     t = h.start(dev)["txn_id"]
     assert h.check(t)["state"] == "EMPTY_TRAY_CHECK"
-    r = h.post("/api/assistant", {"request_id": rid(), "question": "What is next?"})
-    assert r["result"] == "ok"
+    # Ask shows the schedule, so it needs sign-in; the dose itself never does.
+    r = h.post("/api/assistant", {"request_id": rid(), "question": "What is next?"}, expect=423)
+    assert r["reason_codes"] == ["SIGNED_OUT"]
     # Simulator only, never guarded (the door is already closed, so this one is refused, but not locked).
     r = h.c.post("/api/sim/hardware", json={"action": "close_door"}, headers=h.h)
     assert r.status_code != 423 and r.json()["reason_codes"] != ["SETUP_LOCKED"]
     h.post("/api/sim/vision", {"face": "match"})
     h.post("/api/device/stop", {"request_id": rid()})
     h.post("/api/doses/self-report", {"request_id": rid(), "dose_id": rem["dose_id"]})
-    for path in ("/api/status", "/api/setup", "/api/history", "/api/metrics", "/api/export/events.csv", "/api/account"):
+    for path in ("/api/status", "/api/account"):
         assert h.c.get(path).status_code == 200, path
+    # Signed out, the person's records stay hidden.
+    for path in ("/api/setup", "/api/history", "/api/metrics", "/api/export/events.csv"):
+        r = h.c.get(path)
+        assert r.status_code == 423 and r.json()["reason_codes"] == ["SIGNED_OUT"], path
     assert account(h)["unlocked"] is False
 
 
@@ -356,6 +363,7 @@ def test_assistant_sees_no_account_data(harness):
     create(h)
     lock(h)
     unlock(h, "wrong password", expect=401)
+    unlock(h)  # Ask needs sign-in; even then it never sees account data
     svc = h.c.app.state.svc
     seen = {}
 
@@ -392,7 +400,7 @@ def test_old_database_gains_the_account_table(tmp_path):
     s.conn.close()
     s = Store(db, FakeClock(datetime(2026, 1, 1, tzinfo=timezone.utc)))
     cols = {r["name"] for r in s.q("PRAGMA table_info(account)")}
-    assert cols == {"account_id", "name", "password_hash", "created_at", "updated_at"}
+    assert cols == {"account_id", "name", "first_name", "password_hash", "created_at", "updated_at"}
     assert s.q1("SELECT COUNT(*) AS n FROM account")["n"] == 0
     assert s.q1("SELECT kind FROM events WHERE kind='OLD_EVENT'")
     s.conn.close()
@@ -440,8 +448,9 @@ def test_every_post_route_is_classified(harness):
     assert guarded == {p for p, _ in SETUP} | {"/api/labels/extract"}
     assert posts - guarded == {
         "/api/account/create", "/api/account/unlock", "/api/account/lock", "/api/account/password",
+        "/api/account/handover",
         "/api/reminders/snooze", "/api/reminders/ack", "/api/reminders/close",
         "/api/doses/self-report", "/api/doses/start", "/api/doses/request", "/api/doses/check",
         "/api/doses/release", "/api/doses/finish", "/api/doses/cancel", "/api/doses/confirm",
-        "/api/device/stop", "/api/assistant", "/api/sim/hardware", "/api/sim/vision"}
+        "/api/doses/followup-later", "/api/device/stop", "/api/assistant", "/api/sim/hardware", "/api/sim/vision"}
     assert not is_setup_route("GET", "/api/labels/abc/image")

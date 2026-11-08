@@ -190,3 +190,22 @@ def test_tray_bypass_marks_tray_results_simulated_and_reports_itself(harness):
     assert r["result"] == "PASS"
     obs = h.c.get(f"/api/history/{card['dose_id']}").json()["observations"]
     assert all(o["simulated"] for o in obs if o["kind"] in ("TRAY_EMPTY", "CLASS_COUNTS"))
+
+
+def test_real_tray_check_keeps_a_circled_photo_of_the_tray_only(tmp_path):
+    """The photo proof is the warped tray area (never the whole frame), with each counted pill ringed."""
+    import asyncio
+    img = tray_image([(150, 150, BLUE), (350, 220, ORANGE)])
+    svc = _service(tmp_path, img)
+    obs = asyncio.run(svc.check_tray({"blue": 1, "orange": 1}, "CLASS_COUNTS"))
+    assert obs.result == "PASS"
+    photo = cv2.imread(str(tmp_path / obs.details["photo"]))
+    assert photo.shape[:2] == (488, 688)  # 344x244 tray area, doubled
+    plain = TrayInspector(svc.settings)._warp(img)[0]
+    plain = cv2.resize(plain, (688, 488))
+    assert np.abs(photo.astype(int) - plain.astype(int)).max() > 100  # rings and tags were drawn
+    # No photo at all when the markers (and so the tray area) are not found.
+    svc2 = _service(tmp_path / "b", tray_image([(150, 150, BLUE)], drop_marker=2))
+    (tmp_path / "b").mkdir(exist_ok=True)
+    obs2 = asyncio.run(svc2.check_tray({"blue": 1}, "CLASS_COUNTS"))
+    assert obs2.reason_code == "TRAY_MARKERS_MISSING" and "photo" not in obs2.details

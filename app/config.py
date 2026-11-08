@@ -87,10 +87,22 @@ class Settings:
     max_question_chars: int = 500
 
     # Account: how long Setup stays unlocked after the last Setup action (sliding)
-    setup_unlock_minutes: int = 15
+    setup_unlock_minutes: int = 0  # 0 = stay signed in until Sign out (or a server restart)
     # Testing only: tray checks come from the simulated dispenser while the face check stays real.
     # Refused with real hardware, where it would release pills nobody counted.
     tray_bypass: bool = False
+
+    # Proof and taking observation
+    evidence_keep: int = 400  # tray photos kept in data/evidence (oldest are removed first)
+    watch_interval_s: float = 0.2  # how often the collection watch samples the face camera
+    action_watch_s: float = 180.0  # keep watching for the hand-to-mouth movement this long after collection
+    action_near_ratio: float = 0.6  # palm within this many face widths of the mouth counts as "at the mouth"
+    action_far_ratio: float = 1.5  # palm farther than this (or no palm) counts as "away from the mouth"
+    action_min_near: int = 2  # samples at the mouth needed, within action_near_window_s
+    action_near_window_s: float = 2.0
+    collector_min_samples: int = 3  # face samples needed to say who emptied the tray
+    followup_minutes: int = 5  # ask "did you take it?" this long after release when no taking was seen
+    fill_check_max_age_s: float = 900.0  # a pill check must be this recent to record a cartridge fill
 
     @classmethod
     def from_env(cls, **overrides) -> "Settings":
@@ -123,8 +135,11 @@ class Settings:
             google_cloud_location=_str("GOOGLE_CLOUD_LOCATION", "us-central1"),
             ai_request_limit=_int("AI_REQUEST_LIMIT", 100),
             require_label_photo=_str("REQUIRE_LABEL_PHOTO", "1") not in ("0", "false", "no"),
-            setup_unlock_minutes=_int("SETUP_UNLOCK_MINUTES", 15),
+            setup_unlock_minutes=_int("SETUP_UNLOCK_MINUTES", 0),
             tray_bypass=_str("TRAY_BYPASS", "0") in ("1", "true", "yes"),
+            evidence_keep=_int("EVIDENCE_KEEP", 400),
+            action_watch_s=_float("ACTION_WATCH_S", 180.0),
+            followup_minutes=_int("FOLLOWUP_MINUTES", 5),
         )
         return replace(s, **overrides) if overrides else s
 
@@ -142,8 +157,8 @@ class Settings:
             problems.append("TRAY_CAMERA_URL is required when CAMERA_MODE=dual_camera")
         if self.genai_backend not in ("off", "developer_api", "google_cloud"):
             problems.append("GENAI_BACKEND must be off, developer_api or google_cloud")
-        if not 1 <= self.setup_unlock_minutes <= 1440:
-            problems.append("SETUP_UNLOCK_MINUTES must be between 1 and 1440")
+        if not 0 <= self.setup_unlock_minutes <= 1440:
+            problems.append("SETUP_UNLOCK_MINUTES must be 0 (stay signed in until Sign out) to 1440")
         if self.host not in ("127.0.0.1", "localhost", "::1"):
             problems.append("HOST must be a loopback address; the command API is local only")
         return problems

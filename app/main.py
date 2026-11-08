@@ -11,17 +11,19 @@ import logging
 import secrets
 import uuid
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from dataclasses import dataclass
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from .account import AccountService, is_setup_route
+from . import evidence
+from .account import AccountService, is_setup_route, needs_sign_in
 from .ai import AIError, AIService
 from .camera import CaptureManager
 from .config import ROOT, Settings
@@ -35,8 +37,8 @@ from .reasons import message
 from .reminders import ReminderService
 from .status import build_status, dose_detail, history, recent_events
 from .store import Store, dumps
-from .timeutil import Clock, fmt_local, parse
-from .vision import VisionService
+from .timeutil import Clock, fmt_local, iso, parse
+from .vision import Observation, VisionService, look_alike_pairs
 from .workflow import WorkflowEngine
 
 log = logging.getLogger("doseguard")
@@ -106,6 +108,8 @@ class PlanConfirm(Cmd):
 # a password back (FastAPI's default 422 body includes the input).
 class AccountCreate(Cmd):
     name: str = ""
+    first_name: str = ""
+    last_name: str = ""
     password: str = ""
 
 
@@ -116,6 +120,12 @@ class AccountUnlock(Cmd):
 class AccountPassword(Cmd):
     current_password: str = ""
     new_password: str = ""
+
+
+class Handover(Cmd):
+    password: str = ""
+    confirm_name: str = ""
+    emptied: bool = False
 
 
 class Ask(Cmd):
@@ -174,6 +184,15 @@ class SimHardware(BaseModel):
 class SimVision(BaseModel):
     face: str | None = None
     tray: str | None = None
+    action: str | None = None
+
+
+class CartridgeCmd(Cmd):
+    cartridge: str = Field(pattern="^[AB]$")
+
+
+class CartridgeFill(CartridgeCmd):
+    count: int = Field(ge=0, le=500)
 
 
 # ---------------------------------------------------------------- app factory
@@ -225,6 +244,12 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     @app.middleware("http")
     async def guard_commands(request: Request, call_next):
         setup = False
+        path = request.scope["path"]
+        if needs_sign_in(request.method, path) and request.app.state.svc.account.signed_out():
+            # Signed out: medicines, records, photos and Ask stay hidden. A due dose never needs this.
+            svc0: Services = request.app.state.svc
+            return harden(JSONResponse({"request_id": None, "state_version": svc0.store.version, "result": "rejected",
+                                        "reason_codes": ["SIGNED_OUT"], "message": message("SIGNED_OUT")}, 423))
         if request.method == "POST":
             svc: Services = request.app.state.svc
             origin = request.headers.get("origin")
@@ -315,6 +340,14 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
             raise WorkflowError(404, "NOT_FOUND", "Dose not found.")
         return d
 
+    @app.get("/api/evidence/{name}")
+    async def get_evidence(request: Request, name: str):
+        """A tray photo from a check. Only the tray area inside the markers is ever stored."""
+        path = evidence.path_for(S(request).settings.data_dir, name)
+        if not path:
+            raise WorkflowError(404, "NOT_FOUND", "Photo not found. Old photos are removed after a while.")
+        return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
     @app.get("/api/setup")
     async def get_setup(request: Request):
         svc = S(request)
@@ -368,7 +401,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
 
     @app.post("/api/account/create")
     async def account_create(request: Request, body: AccountCreate):
-        return ok(request, body.request_id, await S(request).account.create(body.request_id, body.name, body.password))
+        return ok(request, body.request_id, await S(request).account.create(body.request_id, body.name, body.password,
+                                                                       body.first_name, body.last_name))
 
     @app.post("/api/account/unlock")
     async def account_unlock(request: Request, body: AccountUnlock):
@@ -382,6 +416,14 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     async def account_password(request: Request, body: AccountPassword):
         return ok(request, body.request_id, await S(request).account.change_password(
             body.request_id, body.current_password, body.new_password))
+
+    @app.post("/api/account/handover")
+    async def account_handover(request: Request, body: Handover):
+        """Give Healthbox to someone else. Checks its own password, like changing the password."""
+        svc = S(request)
+        require_idle(svc)
+        return ok(request, body.request_id, await svc.account.handover(
+            body.request_id, body.password, body.confirm_name, body.emptied, lambda conn, name: _hand_over(svc, conn, name)))
 
     # ------------------------------------------------------------ reminders
     @app.post("/api/reminders/snooze")
@@ -433,6 +475,10 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     async def confirm(request: Request, body: DoseCmd):
         return ok(request, body.request_id, await S(request).engine.confirm_taken(body.request_id, body.dose_id))
 
+    @app.post("/api/doses/followup-later")
+    async def followup_later(request: Request, body: DoseCmd):
+        return ok(request, body.request_id, await S(request).engine.followup_later(body.request_id, body.dose_id))
+
     # ------------------------------------------------------------ device
     @app.post("/api/device/stop")
     async def stop(request: Request, body: Cmd):
@@ -455,16 +501,29 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         prev = svc.store.get_request(body.request_id)
         if prev:
             return json.loads(prev["response_json"])
-        person_id = uuid.uuid4().hex[:10]
+        # One person per Healthbox: the face belongs to the account's name. Enrolling again retakes the
+        # same person's face (their plan stays linked); a new person needs "Give Healthbox to someone else".
+        require_idle(svc)
+        account_name = svc.account.brief()["name"]
+        label = (account_name or body.label).strip()
+        current = svc.store.current_person()
+        person_id = current["person_id"] if current else uuid.uuid4().hex[:10]
         ref, err = await svc.vision.enroll(person_id)
         if err:
             raise WorkflowError(409, "CAMERA_UNAVAILABLE", err)
         simulated = svc.camera.simulated
+        now = svc.store.now()
         with svc.store.tx() as conn:
-            conn.execute("INSERT INTO persons (person_id, label, consent_at, embedding_ref, simulated, created_at) VALUES (?,?,?,?,?,?)",
-                         (person_id, body.label.strip(), svc.store.now(), ref, int(simulated), svc.store.now()))
-            svc.store.event(conn, "PERSON_ENROLLED", details={"person_id": person_id, "simulated": simulated})
-            result = ok(request, body.request_id, {"person_id": person_id, "simulated": simulated})
+            if current:
+                conn.execute("UPDATE persons SET label=?, consent_at=?, embedding_ref=?, simulated=? WHERE person_id=?",
+                             (label, now, ref, int(simulated), person_id))
+                svc.store.event(conn, "PERSON_FACE_RETAKEN", details={"person_id": person_id, "simulated": simulated})
+            else:
+                conn.execute("INSERT INTO persons (person_id, label, consent_at, embedding_ref, simulated, created_at) VALUES (?,?,?,?,?,?)",
+                             (person_id, label, now, ref, int(simulated), now))
+                svc.store.event(conn, "PERSON_ENROLLED", details={"person_id": person_id, "simulated": simulated})
+            result = ok(request, body.request_id, {"person_id": person_id, "simulated": simulated, "label": label,
+                                                   "retaken": bool(current)})
             svc.store.save_request(conn, body.request_id, "enroll", 200, result)
         demo_plan = svc.store.active_plan(1)
         if demo_plan and not demo_plan["person_id"]:
@@ -593,7 +652,11 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         prev = svc.store.get_request(body.request_id)
         if prev:
             return json.loads(prev["response_json"])
-        result = ok(request, body.request_id, confirm_plan(svc.store, svc.reminders, request=body.model_dump(),
+        req = body.model_dump()
+        me = svc.store.current_person()
+        if me:
+            req["person_id"] = me["person_id"]  # one person per Healthbox: the plan is always theirs
+        result = ok(request, body.request_id, confirm_plan(svc.store, svc.reminders, request=req,
                                                            max_per_channel=svc.settings.max_tokens_per_channel,
                                                            require_label=svc.settings.require_label_photo))
         with svc.store.tx() as conn:
@@ -654,6 +717,9 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         require_idle(svc)
         if not svc.store.demo:
             raise WorkflowError(409, "DEMO_MISMATCH", "Demo reset is available only in demo mode.")
+        photos = [json.loads(r["details_json"] or "{}").get("photo") for r in
+                  svc.store.q("SELECT details_json FROM observations WHERE demo=1 AND details_json LIKE '%photo%'")]
+        evidence.delete(svc.settings.data_dir, [p for p in photos if p])
         with svc.store.tx() as conn:
             txns = [r["txn_id"] for r in conn.execute("SELECT txn_id FROM transactions WHERE demo=1").fetchall()]
             for t in txns:
@@ -680,9 +746,75 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         label = (body.label or "").strip() or classes[body.class_id]["label"]
         with svc.store.tx() as conn:
             conn.execute("UPDATE token_classes SET hsv_json=?, color=?, label=? WHERE class_id=?",
-                         (dumps({"ranges": prof["ranges"], "shape": prof["shape"]}), prof["color"], label, body.class_id))
+                         (dumps({"ranges": prof["ranges"], "shape": prof["shape"], "sample_hsv": prof["sample_hsv"]}),
+                          prof["color"], label, body.class_id))
             svc.store.event(conn, "TRAY_CLASS_CALIBRATED", details={"class_id": body.class_id, "label": label, **prof["shape"]})
-        return ok(request, body.request_id, {"class_id": body.class_id, "label": label, **prof})
+        alike = [p for p in look_alike_pairs(svc.store.token_classes()) if body.class_id in (p["a"], p["b"])]
+        if alike:
+            svc.store.log("PILL_TYPES_LOOK_ALIKE", reason="LOOK_ALIKE_PILLS", details={"pairs": [[p["a"], p["b"]] for p in alike]})
+        return ok(request, body.request_id, {"class_id": body.class_id, "label": label, **prof, "look_alike": alike})
+
+    # ------------------------------------------------------------ cartridges: fill check and pill count
+    @app.post("/api/cartridges/check-pill")
+    async def cartridge_check_pill(request: Request, body: CartridgeCmd):
+        """Before filling: one pill from the bottle in the tray must look like this cartridge's pill type."""
+        svc = S(request)
+        require_idle(svc)
+        classes = svc.store.token_classes()
+        cls = next((c for c in classes if c["cartridge"] == body.cartridge), None)
+        if not cls:
+            raise WorkflowError(404, "NOT_FOUND", "Unknown cartridge.")
+        async with svc.engine.lock:
+            obs = await svc.vision.check_tray({cls["class_id"]: 1}, "FILL_CHECK")
+        observed = obs.details.get("observed")
+        code, msg = obs.reason_code, obs.message
+        if obs.result == "PASS":
+            code, msg = None, (f"This pill matches the {cls['label']} pill type for cartridge {body.cartridge}. "
+                               "Take it out of the tray and put it in the cartridge with the rest.")
+        elif observed is not None:
+            total, mine = sum(observed.values()), int(observed.get(cls["class_id"], 0))
+            others = [c["label"] for c in classes if c["class_id"] != cls["class_id"] and observed.get(c["class_id"])]
+            code = "FILL_NO_PILL" if total == 0 else "FILL_TOO_MANY" if total > 1 and mine and not others else "FILL_WRONG_PILL"
+            msg = message(code)
+            if code == "FILL_WRONG_PILL" and others:
+                msg += f" It looks like the {others[0]} pill type."
+            obs.result = "FAIL"
+        obs.reason_code, obs.message = code, msg
+        obs.details.update({"cartridge": body.cartridge, "class_id": cls["class_id"]})
+        obs_id = _save_free_obs(svc, obs)
+        return ok(request, body.request_id, {"result": obs.result, "reason_code": code, "message": msg, "observation_id": obs_id,
+                                             "photo": obs.details.get("photo"), "observed": observed,
+                                             "simulated": obs.simulated, "cartridge": body.cartridge})
+
+    @app.post("/api/cartridges/fill")
+    async def cartridge_fill(request: Request, body: CartridgeFill):
+        """Record how many pills are in a cartridge now. Needs a passing pill check from the last few minutes."""
+        svc = S(request)
+        require_idle(svc)
+        prev = svc.store.get_request(body.request_id)
+        if prev:
+            return json.loads(prev["response_json"])
+        since = iso(svc.store.clock.now() - timedelta(seconds=svc.settings.fill_check_max_age_s))
+        check = next((o for o in svc.store.q(
+            "SELECT obs_id, result, details_json, created_at FROM observations WHERE kind='FILL_CHECK' AND created_at>=?"
+            " ORDER BY obs_id DESC", (since,)) if json.loads(o["details_json"] or "{}").get("cartridge") == body.cartridge), None)
+        if not check or check["result"] != "PASS":
+            raise WorkflowError(409, "FILL_CHECK_REQUIRED")
+        plan = svc.store.active_plan()
+        meds = [{"label": e["label"], "label_id": e.get("label_id")} for e in (plan or {}).get("entries", [])
+                if e.get("delivery_mode") == "DEVICE" and e.get("cartridge") == body.cartridge]
+        now = svc.store.now()
+        with svc.store.tx() as conn:
+            conn.execute("INSERT INTO cartridge_stock (cartridge, count, filled_at, fill_check_obs, updated_at) VALUES (?,?,?,?,?)"
+                         " ON CONFLICT(cartridge) DO UPDATE SET count=excluded.count, filled_at=excluded.filled_at,"
+                         " fill_check_obs=excluded.fill_check_obs, updated_at=excluded.updated_at",
+                         (body.cartridge, body.count, now, check["obs_id"], now))
+            svc.store.event(conn, "CARTRIDGE_FILLED", details={"cartridge": body.cartridge, "count": body.count, "medicines": meds,
+                                                               "check_observation": check["obs_id"],
+                                                               "photo": json.loads(check["details_json"]).get("photo")})
+            result = ok(request, body.request_id, {"cartridge": body.cartridge, "count": body.count, "filled_at": now})
+            svc.store.save_request(conn, body.request_id, "cartridges/fill", 200, result)
+        return result
 
     @app.post("/api/tray/rename")
     async def tray_rename(request: Request, body: Calibrate):
@@ -710,10 +842,62 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         svc = S(request)
         if not svc.vision.simulated:
             raise WorkflowError(409, "INVALID_TRANSITION", "Vision simulation is off (CAMERA_MODE is not simulated).")
-        svc.vision.set_sim(body.face, body.tray)
+        svc.vision.set_sim(body.face, body.tray, body.action)
         return ok(request, None, {"sim": svc.vision.sim})
 
     return app
+
+
+def _hand_over(svc: Services, conn, name: str):
+    """Inside the hand-over transaction: archive the person (name kept for history, face removed), retire
+    their plans, drop their future reminders, close open ones, and forget the cartridge counts and arming.
+    Returns a callback run after commit (file and in-memory clean-up)."""
+    now = svc.store.now()
+    faces = [r["embedding_ref"] for r in conn.execute(
+        "SELECT embedding_ref FROM persons WHERE archived_at IS NULL AND embedding_ref IS NOT NULL").fetchall()]
+    conn.execute("UPDATE persons SET archived_at=?, embedding_ref=NULL WHERE archived_at IS NULL", (now,))
+    conn.execute("UPDATE plan_versions SET active=0, handed_over_at=?, handed_over_name=? WHERE handed_over_at IS NULL", (now, name))
+    stale = [r["dose_id"] for r in conn.execute(
+        "SELECT d.dose_id FROM doses d JOIN reminders r ON r.dose_id=d.dose_id"
+        " WHERE d.workflow_state='NOT_STARTED' AND r.state='SCHEDULED'").fetchall()]
+    for dose_id in stale:
+        conn.execute("DELETE FROM reminders WHERE dose_id=?", (dose_id,))
+        conn.execute("DELETE FROM doses WHERE dose_id=?", (dose_id,))
+    conn.execute("UPDATE reminders SET state='CLOSED', closed_at=?, close_reason='HANDED_OVER', next_alert_at=NULL, updated_at=?"
+                 " WHERE state IN ('DUE','SNOOZED','NEEDS_REVIEW','ACKNOWLEDGED')", (now, now))
+    conn.execute("UPDATE doses SET followup_after=NULL WHERE followup_after IS NOT NULL")
+    conn.execute("UPDATE cartridge_stock SET count=NULL, filled_at=NULL, fill_check_obs=NULL, updated_at=?", (now,))
+    svc.store.meta_set(conn, "demo_mode", "0")
+    svc.store.event(conn, "PERSON_HANDED_OVER", details={"from": name, "future_doses_removed": len(stale)}, demo=0)
+
+    def after():
+        for rel in faces:
+            try:
+                (svc.settings.data_dir / rel).unlink(missing_ok=True)
+            except OSError:
+                pass
+        svc.engine.armed_session = None  # the new person arms it again during the welcome setup
+        svc.vision.stop_watch()
+    return after
+
+
+def _save_free_obs(svc: Services, obs: Observation) -> int:
+    """An observation outside any dose (a cartridge fill check)."""
+    from .timeutil import iso as _iso
+    details = dict(obs.details)
+    if obs.message:
+        details["message"] = obs.message
+    with svc.store.tx() as conn:
+        cur = conn.execute(
+            "INSERT INTO observations (txn_id, kind, result, reason_code, method, capture_time, capture_mono, frame_ids_json,"
+            " tray_revision, controller_session, details_json, simulated, demo, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (None, obs.kind, obs.result, obs.reason_code, obs.method, _iso(obs.capture_time), obs.capture_mono,
+             dumps(obs.frame_ids[:20]), obs.tray_revision, obs.controller_session, dumps(details), int(obs.simulated),
+             svc.store.demo, svc.store.now()))
+        svc.store.event(conn, obs.kind, reason=obs.reason_code,
+                        details={"result": obs.result, "cartridge": details.get("cartridge"), "observed": details.get("observed"),
+                                 "photo": details.get("photo"), "simulated": obs.simulated})
+        return int(cur.lastrowid)
 
 
 def _tz(svc: Services):

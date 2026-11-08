@@ -9,6 +9,7 @@ from . import as_needed
 from .plans import is_as_needed
 from .reasons import message
 from .timeutil import fmt_local, iso, local_date, parse
+from .vision import look_alike_pairs
 
 
 def tz_for(services) -> ZoneInfo:
@@ -40,6 +41,8 @@ def _card(row: dict, tz: ZoneInfo, classes: dict) -> dict:
         "workflow_state": row["workflow_state"], "txn_id": row["txn_id"], "outcome": row["outcome"],
         "collection": row["collection"], "self_report": row["self_report"], "review_reason": row["review_reason"],
         "schedule": row["schedule"], "as_needed": row["schedule"] == "AS_NEEDED",
+        "collected_by": row.get("collected_by"), "action": row.get("action"),
+        "earlier_person": row.get("handed_over_name") if row.get("handed_over_at") else None,
         # As-needed doses have no reminder.
         "reminder": None if row["reminder_id"] is None else {
             "reminder_id": row["reminder_id"], "state": row["r_state"], "snoozed_until": row["snoozed_until"],
@@ -51,9 +54,12 @@ def _card(row: dict, tz: ZoneInfo, classes: dict) -> dict:
 
 
 DOSE_SQL = (
-    "SELECT d.*, r.reminder_id, r.state AS r_state, r.snoozed_until, r.sound_repeat_count, r.acknowledged_at, r.close_reason"
+    "SELECT d.*, r.reminder_id, r.state AS r_state, r.snoozed_until, r.sound_repeat_count, r.acknowledged_at, r.close_reason,"
+    " pv.handed_over_at, pv.handed_over_name"
     " FROM doses d LEFT JOIN reminders r ON r.dose_id=d.dose_id"
+    " LEFT JOIN plan_versions pv ON pv.plan_version_id=d.plan_version_id"
 )
+CURRENT = " AND pv.handed_over_at IS NULL"  # leave out doses of someone Healthbox was handed over from
 
 
 def today_cards(services) -> list[dict]:
@@ -64,7 +70,7 @@ def today_cards(services) -> list[dict]:
     rows = store.q(
         DOSE_SQL + " WHERE d.demo=? AND d.schedule='SCHEDULED' AND (d.local_date=? OR r.state IN ('DUE','SNOOZED','NEEDS_REVIEW')"
         " OR d.workflow_state IN ('PERSON_CHECK','EMPTY_TRAY_CHECK','DISPENSING','DOSE_CHECK','RECIPIENT_RECHECK','RELEASE_PENDING',"
-        "'RELEASED','FAULT','UNCERTAIN')) ORDER BY d.due_at_utc, d.label",
+        "'RELEASED','FAULT','UNCERTAIN'))" + CURRENT + " ORDER BY d.due_at_utc, d.label",
         (demo, today),
     )
     classes = store.class_by_id()
@@ -78,7 +84,8 @@ def build_status(services) -> dict:
     demo = store.demo
     cards = today_cards(services)
     upcoming = store.q1(
-        DOSE_SQL + " WHERE d.demo=? AND r.state='SCHEDULED' AND d.due_at_utc>=? ORDER BY d.due_at_utc LIMIT 1", (demo, iso(now)))
+        DOSE_SQL + " WHERE d.demo=? AND r.state='SCHEDULED' AND d.due_at_utc>=?" + CURRENT + " ORDER BY d.due_at_utc LIMIT 1",
+        (demo, iso(now)))
     sounds = store.q(
         "SELECT event_id, reminder_id, ts FROM events WHERE kind='REMINDER_ALERT' AND demo=? AND ts>=? ORDER BY event_id",
         (demo, iso(now - timedelta(seconds=30))),
@@ -89,7 +96,7 @@ def build_status(services) -> dict:
     device = services.hardware.status()
     camera = services.camera.status()
     pose = (wf.get("txn") or {}).get("pose")
-    return {
+    snap = {
         "state_version": store.version,
         "server_time": iso(now),
         "server_time_local": now.astimezone(tz).strftime("%A %-d %B, %-I:%M:%S %p"),
@@ -111,11 +118,36 @@ def build_status(services) -> dict:
         "token_classes": [{"class_id": c["class_id"], "label": c["label"], "cartridge": c["cartridge"], "color": c["color"],
                            "shape": c["hsv"].get("shape")} for c in store.token_classes()],
         "vision": services.vision.status(),
+        "watch": watch_status(services),
+        "followups": followups(services, tz, now),
+        "cartridges": cartridge_status(store, plan),
+        "look_alike": look_alike_pairs(store.token_classes()),
+        "look_alike_blocks": not services.vision.tray_simulated,
         "ai": services.ai.status(),
         "account": services.account.brief(),  # exists, name, unlocked only
+        "signed_out": False,
         "config": {"hardware_mode": s.hardware_mode, "camera_mode": s.camera_mode,
-                   "snooze_minutes": s.snooze_minutes, "sound_max": s.sound_max, "needs_review_minutes": s.needs_review_minutes},
+                   "snooze_minutes": s.snooze_minutes, "followup_minutes": s.followup_minutes, "sound_max": s.sound_max, "needs_review_minutes": s.needs_review_minutes},
     }
+    return signed_out_view(snap) if services.account.signed_out() else snap
+
+
+DOSE_ONLY_STATES = ("PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "RELEASE_PENDING",
+                    "RELEASED", "FAULT", "UNCERTAIN")
+
+
+def signed_out_view(snap: dict) -> dict:
+    """Signed out, the page gets only what taking a due dose needs: due and in-progress doses, the dose
+    steps, follow-ups, the taking watch, the device and camera. No plan, no other medicines, no records."""
+    snap = dict(snap)
+    snap["today"] = [c for c in snap["today"] if c["workflow_state"] in DOSE_ONLY_STATES or
+                     (c["workflow_state"] == "NOT_STARTED" and (c["reminder"] or {}).get("state") in ("DUE", "SNOOZED", "NEEDS_REVIEW"))]
+    snap["as_needed"] = []
+    snap["next_dose"] = None
+    snap["plan"] = None
+    snap["cartridges"] = []
+    snap["signed_out"] = True
+    return snap
 
 
 def as_needed_items(store, plan: dict | None, tz: ZoneInfo, now) -> list[dict]:
@@ -194,3 +226,63 @@ def recent_events(services, limit: int = 8) -> list[dict]:
     for r in rows:
         r["ts_local"] = fmt_local(parse(r["ts"]), tz)
     return rows
+
+
+def followups(services, tz: ZoneInfo, now) -> list[dict]:
+    """Released doses to ask about: no "I took it" yet and no hand-to-mouth movement seen,
+    FOLLOWUP_MINUTES after release (or after "Not yet"). Shown for 12 hours at most."""
+    store = services.store
+    rows = store.q(
+        DOSE_SQL + " WHERE d.demo=? AND d.delivery_mode='DEVICE' AND d.workflow_state IN ('RELEASED','COMPLETE')"
+        " AND d.self_report IS NULL AND COALESCE(d.action,'')!='OBSERVED' AND d.followup_after IS NOT NULL"
+        " AND d.followup_after<=? AND d.followup_after>=?" + CURRENT + " ORDER BY d.due_at_utc",
+        (store.demo, iso(now), iso(now - timedelta(hours=12))))
+    classes = store.class_by_id()
+    out = []
+    for r in rows:
+        c = _card(r, tz, classes)
+        # Still in the tray (the dose was never collected) asks a different question.
+        c["followup"] = "collect" if r["workflow_state"] == "RELEASED" or r["collection"] == "PENDING" else "taken"
+        out.append(c)
+    return out
+
+
+def cartridge_status(store, plan: dict | None) -> list[dict]:
+    """Estimated pills left per cartridge. The count is set when the cartridge is filled and lowered
+    by each finished dispense motion, so it is an estimate, never a measurement."""
+    stock = {r["cartridge"]: r for r in store.q("SELECT * FROM cartridge_stock")}
+    per_day: dict[str, int] = {}
+    used: set[str] = set()
+    for e in (plan or {}).get("entries", []):
+        cart = e.get("cartridge")
+        if e.get("delivery_mode") != "DEVICE" or not cart:
+            continue
+        used.add(cart)
+        if not is_as_needed(e):
+            per_day[cart] = per_day.get(cart, 0) + int(e.get("quantity") or 0) * len(e.get("times") or [])
+    out = []
+    for c in store.token_classes():
+        cart = c["cartridge"]
+        row = stock.get(cart)
+        count = row["count"] if row else None
+        need = per_day.get(cart, 0)
+        low = count is not None and cart in used and (count == 0 or count <= max(3, 2 * need))
+        out.append({"cartridge": cart, "class_id": c["class_id"], "label": c["label"], "color": c["color"],
+                    "count": count, "filled_at": row["filled_at"] if row else None, "per_day": need,
+                    "days_left": None if count is None or not need else round(count / need, 1),
+                    "used": cart in used, "low": low, "empty": count == 0})
+    return out
+
+
+def watch_status(services) -> dict | None:
+    """The live collection watch, with the doses it is for (so the page can offer "I took it")."""
+    w = services.vision.watch_view()
+    if not w:
+        return None
+    classes = services.store.class_by_id()
+    rows = services.store.q("SELECT dose_id, label, quantity, class_id, self_report, action, demo FROM doses WHERE txn_id=?",
+                            (w["txn_id"],))
+    w["doses"] = [{"dose_id": r["dose_id"], "label": r["label"], "quantity": r["quantity"], "self_report": r["self_report"],
+                   "action": r["action"], "class_color": (classes.get(r["class_id"]) or {}).get("color")}
+                  for r in rows if r["demo"] == services.store.demo]
+    return w

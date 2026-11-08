@@ -16,7 +16,7 @@ DoseGuard is a local smart pillbox. It reminds the person when a confirmed dose 
 
 ## Positioning
 
-The dose is physically guarded: face check, empty-tray check, counted dose check, recipient recheck, then release. Reminders never move hardware, and released, collected and self-reported are recorded separately. DoseGuard never claims to verify swallowing.
+The dose is physically guarded: face check, empty-tray check, counted dose check, recipient recheck, then release. Every tray check keeps a photo of the tray with each counted pill circled. After release the camera records who emptied the tray and whether a hand moved to the person's mouth, and asks "Did you take it?" if neither that nor "I took it" happened. Reminders never move hardware, and released, collected, hand-to-mouth seen and self-reported are recorded separately. DoseGuard never claims to verify swallowing.
 
 ## Operating Context
 
@@ -26,9 +26,9 @@ The dose is physically guarded: face check, empty-tray check, counted dose check
 
 ## Capabilities and Constraints
 
-Everyday: Today (due doses, remind me later, silence, I took it for reminder-only, as-needed medicines with when they are next allowed), Dose steps (six guarded steps), Ask (read-only assistant), Display (language EN/ES/ZH, text size, high contrast, simple view), read aloud.
-Setup (one door, used rarely): My medicines (confirmed plan, scheduled and as-needed), Set up (face enrollment, label photos with multi-angle bottle capture, entries, timezone), History (per-dose timeline, CSV), Dispenser (status, arm, supervised recovery, pill-type calibration, simulator, developer info).
-Account: one local account per laptop (name and password, hashed, never leaves the laptop). The password guards Setup changes only and stays unlocked for 15 minutes after the last change; taking a dose, reminders, STOP and Ask never need it. A forgotten password is reset on the laptop with `scripts/reset_account.py` (medicines and history are kept). Label directions can pre-fill suggested times; the person still confirms each entry.
+Everyday: Today (due doses, remind me later, silence, I took it for reminder-only, as-needed medicines with when they are next allowed, "Now take your medicine" while the camera watches, "Did you take it?" follow-ups, low-cartridge notes), Dose steps (six guarded steps, live "what the camera sees" while collecting, tray photos), Ask (read-only assistant), Display (language EN/ES/ZH, text size, high contrast, simple view), read aloud.
+Setup (one door, used rarely): My medicines (confirmed plan, scheduled and as-needed), Set up (face enrollment, label photos with multi-angle bottle capture, entries, timezone), History (per-dose timeline, camera record and tray photos, CSV), Dispenser (status, arm, supervised recovery, cartridges with fill check and estimated pill count, pill-type calibration with look-alike warning, simulator, developer info).
+Account: one local account per laptop, for one person (name and password, hashed, never leaves the laptop). The account's name is the only name; the face belongs to it. Sign out fully signs out: until the password is entered only a due dose (taken with the face check), follow-ups and the sign-in panel show; medicines, history, photos, Ask and Setup are hidden and refused by the server. A forgotten password never blocks a due dose. "Someone else will use this Healthbox" archives the person (history kept under their name) and starts the welcome for the next person. You stay signed in until Sign out or a server restart; taking a due dose, reminders and STOP never need the password. A forgotten password is reset on the laptop with `scripts/reset_account.py` (medicines and history are kept). Label directions can pre-fill suggested times; the person still confirms each entry.
 Constraints: vanilla HTML/CSS/JS, no build step; every rule is enforced on the server; STOP is always visible.
 
 ## Brand Commitments

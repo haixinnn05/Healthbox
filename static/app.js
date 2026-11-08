@@ -40,7 +40,7 @@ function applyI18n(root = document) {
 const S = {
   status: null, offline: false, view: "today", keys: {}, audio: null, setup: null,
   history: null, historySel: null, historyDetail: null, historyVersion: -1,
-  busy: null, chat: [], cameraImg: null, lastDue: 0,
+  busy: null, chat: [], cameraImg: null, lastDue: 0, followSeen: new Set(), fill: null,
 };
 
 const STEPS = ["PERSON_CHECK", "EMPTY_TRAY_CHECK", "DISPENSING", "DOSE_CHECK", "RECIPIENT_RECHECK", "COLLECTION_CHECK"];
@@ -304,6 +304,10 @@ function startBlockers(s) {
   else if (s.device.fault) detail.push(`Dispenser stopped: ${s.device.fault}. Use recovery in Setup, Dispenser.`);
   else if (!s.workflow.armed) detail.push("Dispenser not armed. Inspect it and arm it in Setup, Dispenser.");
   if (detail.length) everyday.push(t("blocked.patient"));
+  if (s.look_alike_blocks && (s.look_alike || []).length) {
+    everyday.push(t("blocked.lookalike"));
+    detail.push(s.look_alike[0].message);
+  }
   if (s.workflow.txn) everyday.push(t("blocked.busy"));
   return { everyday, detail, any: everyday.length > 0 };
 }
@@ -426,6 +430,7 @@ async function poll() {
     S.offline = false;
     handleSounds(s);
     notifyDue(s);
+    notifyFollowups(s);
     if (s.due_count > S.lastDue) {
       const c = s.today.find((x) => x.reminder.state === "DUE");
       if (c) announce(`${t("due.now")}: ${c.label}`);
@@ -453,6 +458,8 @@ function rerender(force = false) {
   due.textContent = waiting.length || "";
   due.classList.toggle("missed", waiting.some((c) => c.reminder.state === "NEEDS_REVIEW"));
   $("#nav-verify").hidden = !(s.workflow && s.workflow.txn);
+  $("#assistant-toggle").hidden = !!s.signed_out;
+  if (s.signed_out && !$("#assistant").hidden) openAssistant(false);
   $("#tab-verify").hidden = !(s.workflow && s.workflow.txn) && S.view !== "verify";
   const acct = s.account || null;
   const lockIc = $("#door-lock");
@@ -465,6 +472,12 @@ function rerender(force = false) {
   const unlocked = !!(acct && acct.unlocked);
   if (S.lastUnlocked !== undefined && S.lastUnlocked !== unlocked && DOOR_VIEWS.includes(S.view)) { S.lastUnlocked = unlocked; route(); return; }
   S.lastUnlocked = unlocked;
+  if (DOOR_VIEWS.includes(S.view) && setupLocked()) {
+    // Signed out: Setup, medicines and history show the sign-in panel only (their data needs sign-in).
+    if (S.keys[S.view] !== "signed-out") { S.keys[S.view] = "signed-out"; doorMain(S.view); }
+    return;
+  }
+  if (S.setupPending && S.view === "setup") { S.setupPending = false; setup.render(); return; }
   const fn = VIEWS[S.view];
   if (!fn || !fn.key) return;
   const key = JSON.stringify([fn.key(s), S.busy, PREFS.lang, PREFS.simple, acct && acct.exists, unlocked]);
@@ -730,7 +743,7 @@ window.addEventListener("resize", () => { const arc = document.querySelector("#s
 function greeting(s) {
   const hour = hourOf(new Date());
   const word = hour < 12 && hour >= 4 ? t("greet.morning") : hour >= 12 && hour < 18 ? t("greet.afternoon") : t("greet.evening");
-  const name = s.plan && s.plan.recipient;
+  const name = (s.account && s.account.first_name) || (s.plan && s.plan.recipient);
   const date = new Intl.DateTimeFormat(locale(), { weekday: "long", month: "long", day: "numeric", timeZone: tz() }).format(new Date());
   return h("div", { class: "greet" }, h("h1", {}, name ? `${word}, ${name}` : word), h("p", {}, date));
 }
@@ -738,10 +751,13 @@ function greeting(s) {
 /* ---------------------------------------------------------------- Today */
 const today = {
   key: (s) => [s.today, s.as_needed, s.next_dose && s.next_dose.dose_id, s.demo_mode, s.workflow.armed, s.workflow.txn && s.workflow.txn.state,
+    watchKey(s.watch), (s.followups || []).map((f) => [f.dose_id, f.followup]), (s.cartridges || []).map((c) => [c.cartridge, c.low, c.empty, c.count]),
+    s.look_alike_blocks && (s.look_alike || []).length,
     s.device.connected, s.device.fault, s.plan && s.plan.plan_version_id, s.plan && s.plan.recipient, Math.floor(hourOf(new Date()) * 12),
-    !!(S.audio && S.audio.state === "running")],
+    !!(S.audio && S.audio.state === "running"), s.signed_out, s.account && s.account.first_name],
   render(s) {
     renderSky(s);
+    if (s.signed_out) return renderSignedOutToday(s);
     const tx = s.workflow.txn;
     const active = s.today.filter((c) => ["DUE", "SNOOZED", "NEEDS_REVIEW"].includes(c.reminder.state) && c.workflow_state === "NOT_STARTED");
     const lead = h("div", { class: "stack" });
@@ -750,6 +766,9 @@ const today = {
         PREFS.simple ? null : h("button", { class: "btn btn-primary btn-big", onclick: () => go("setup") }, t("today.no_plan_btn"), icon("arrow-right"))));
     }
     if (tx) lead.append(progressPanel(s, tx));
+    const taking = takingPanel(s);
+    if (taking) lead.append(taking);
+    followPanels(s).forEach((p) => lead.append(p));
     // Doses due at the same time come out of the dispenser together, so they share one panel.
     const groups = [];
     for (const c of active) {
@@ -758,7 +777,9 @@ const today = {
     }
     // One primary action per screen: while a dose is in progress, other panels step back.
     groups.forEach((g, i) => lead.append(duePanel(g, s, !!tx || i > 0)));
-    if (s.plan && !active.length && !tx) {
+    const stock = stockNotes(s);
+    if (stock) lead.append(stock);
+    if (s.plan && !active.length && !tx && !taking && !(s.followups || []).length) {
       const nd = s.next_dose;
       lead.append(calmPanel(t("today.all_set"), nd ? t("today.next", { name: nd.label, time: whenText(nd) }) : t("today.all_set_sub")));
     }
@@ -766,6 +787,27 @@ const today = {
     setMain(h("div", { class: "today-grid" }, lead, h("div", {}, laterPanel(s, shown), needPanel(s))));
   },
 };
+
+/* Signed out: only what a due dose needs, then the sign-in panel. A forgotten password never blocks a dose. */
+function renderSignedOutToday(s) {
+  const tx = s.workflow.txn;
+  const active = s.today.filter((c) => ["DUE", "SNOOZED", "NEEDS_REVIEW"].includes(c.reminder.state) && c.workflow_state === "NOT_STARTED");
+  const lead = h("div", { class: "stack" });
+  if (tx) lead.append(progressPanel(s, tx));
+  const taking = takingPanel(s);
+  if (taking) lead.append(taking);
+  followPanels(s).forEach((p) => lead.append(p));
+  const groups = [];
+  for (const c of active) {
+    const g = c.delivery_mode === "DEVICE" && groups.find((x) => x[0].delivery_mode === "DEVICE" && x[0].due_at_utc === c.due_at_utc && x[0].reminder.state === c.reminder.state);
+    if (g) g.push(c); else groups.push([c]);
+  }
+  groups.forEach((g, i) => lead.append(duePanel(g, s, !!tx || i > 0)));
+  if (!lead.childNodes.length) lead.append(calmPanel(t("signedout.none_title"), t("signedout.none_body")));
+  // One sign-in panel kept across refreshes, so a half-typed password is not lost when the page updates.
+  if (!S.signin) S.signin = unlockPanel(false);
+  setMain(h("div", { class: "today-grid" }, lead, h("div", {}, S.signin)));
+}
 
 function calmPanel(title, body, action) {
   return h("section", { class: "due-panel calm" }, h("h2", {}, title), h("p", {}, body),
@@ -900,7 +942,8 @@ function needPanel(s) {
 const verify = {
   key: (s) => {
     const tx = s.workflow.txn;
-    return [tx && { ...tx, observations: Object.fromEntries(Object.entries(tx.observations || {}).map(([k, o]) => [k, { ...o, age_s: null }])) },
+    return [tx && { ...tx, watch: watchKey(tx.watch), observations: Object.fromEntries(Object.entries(tx.observations || {}).map(([k, o]) => [k, { ...o, age_s: null }])) },
+      watchKey(s.watch), (s.followups || []).map((f) => f.dose_id),
       s.workflow.armed, s.workflow.busy, s.workflow.pending_operation, s.device.connected, s.device.fault, s.device.door_closed,
       s.camera.mode, s.vision.sim, s.today.map((c) => [c.dose_id, c.reminder.state, c.workflow_state, c.self_report])];
   },
@@ -967,6 +1010,7 @@ function stepPanel(s, tx) {
         !PREFS.simple && DEVICE_CODES.includes(b.code) ? h("div", { class: "detail" }, b.message) : null)));
   }
   panel.append(h("p", { class: "say", id: "stage-say" }, say));
+  if (tx.state === "COLLECTION_CHECK") panel.append(watchBox(tx.watch));
   const zone = h("div", { class: "step-actions" });
   const row = h("div", { class: "due-actions" });
   if (tx.state === "FAULT" || tx.state === "UNCERTAIN") {
@@ -975,13 +1019,13 @@ function stepPanel(s, tx) {
     zone.append(h("div", { class: "waiting", role: "status" }, h("span", { class: "breath", "aria-hidden": "true" }), t("verify.wait")));
   } else if (wfBusy) {
     zone.append(h("div", { class: "waiting", role: "status" }, h("span", { class: "breath", "aria-hidden": "true" }),
-      tx.pose === "FACE" ? t("verify.checking_face") : t("verify.checking_tray")));
+      tx.pose === "FACE" && tx.state !== "COLLECTION_CHECK" ? t("verify.checking_face") : t("verify.checking_tray")));
   } else if (tx.state === "RECIPIENT_RECHECK") {
     row.append(h("button", { class: "btn btn-primary btn-big ringed", disabled: !tx.release_available, onclick: () => release(tx) }, icon("lock-key-open"), t(`stage.${tx.state}.btn`)));
     if (!tx.release_available) zone.append(h("p", { class: "muted" }, t("verify.unlock_unavailable")));
   } else if (tx.next_action) {
     row.append(h("button", { class: "btn btn-primary btn-big ringed", onclick: () => runCheck(tx) },
-      icon(tx.pose === "FACE" ? "user-focus" : "camera"), t(`stage.${tx.state}.btn`)));
+      icon(tx.pose === "FACE" && tx.state !== "COLLECTION_CHECK" ? "user-focus" : "camera"), t(`stage.${tx.state}.btn`)));
   }
   row.append(readButton(() => [say, ...blocks.map(blockText)].join(" ")));
   zone.prepend(row);
@@ -1041,8 +1085,11 @@ function simVisionControls(s, trayOnly = false) {
   const tray = h("select", { class: "plain-select", "aria-label": "Simulated tray view", onchange: (e) => api("/api/sim/vision", { tray: e.target.value }) },
     [["auto", "Tray as simulated"], ["touching", "Objects touching"], ["markers_missing", "Markers hidden"], ["blurry", "Blurry"]]
       .map(([v, l]) => h("option", { value: v, selected: s.vision.sim.tray === v }, l)));
+  const action = h("select", { class: "plain-select", "aria-label": "Simulated taking", onchange: (e) => api("/api/sim/vision", { action: e.target.value }) },
+    [["taken", "Hand to mouth after release"], ["not_seen", "No hand-to-mouth movement"]]
+      .map(([v, l]) => h("option", { value: v, selected: s.vision.sim.action === v }, l)));
   return h("details", { class: "more" }, h("summary", {}, icon("caret-right"), "Camera simulator (testing)"),
-    h("div", { class: "more-body row" }, trayOnly ? null : face, tray));
+    h("div", { class: "more-body row" }, trayOnly ? null : face, tray, trayOnly ? null : action));
 }
 
 function checkedPanel(tx) {
@@ -1068,7 +1115,106 @@ function checkedPanel(tx) {
   const open = mismatch || tx.state === "DOSE_CHECK";
   return h("details", { class: "more", open },
     h("summary", {}, icon("caret-right"), t("verify.checked")),
-    h("div", { class: "more-body" }, h("p", { class: "muted" }, t("verify.contents")), table, PREFS.simple ? null : evidenceList(tx)));
+    h("div", { class: "more-body" }, h("p", { class: "muted" }, t("verify.contents")), table, proofPhoto(obs), PREFS.simple ? null : evidenceList(tx)));
+}
+
+/* ---------------------------------------------------------------- proof, collection watch, taking */
+function proofPhoto(o) {
+  if (!o || !o.photo) return null;
+  const src = `/api/${o.photo}`;
+  return h("figure", { class: "proof" },
+    h("a", { href: src, target: "_blank", rel: "noopener" }, h("img", { src, alt: t("proof.title"), loading: "lazy" })),
+    h("figcaption", {}, t("proof.caption"), o.simulated ? h("span", { class: "sim-note" }, t("proof.sim")) : null));
+}
+
+function watchKey(w) {
+  return w ? [w.txn_id, w.active, w.available, w.palms_available, w.collector_so_far, w.action_observed,
+    (w.doses || []).map((d) => [d.dose_id, d.self_report, d.action])] : null;
+}
+
+function takingRow(w) {
+  if (w.action_observed) return h("span", { class: "verdict ok" }, icon("check-circle"), t("watch.taking.yes"));
+  if (!w.palms_available) return h("span", { class: "verdict none" }, icon("minus-circle"), t("watch.taking.off"));
+  return h("span", { class: "verdict none" }, icon("hourglass-medium"), t("watch.taking.no"));
+}
+
+function watchBox(w) {
+  const box = h("div", { class: "watch-box", role: "status", "aria-live": "polite" }, h("h3", {}, t("watch.title")));
+  if (!w || !w.available) {
+    box.append(h("p", { class: "muted" }, t("watch.off")));
+    return box;
+  }
+  const who = w.collector_so_far;
+  const whoView = who === "RECIPIENT" ? ["ok", "check-circle"] : who === "OTHER_PERSON" ? ["bad", "warning-circle"] : ["none", "hourglass-medium"];
+  box.append(h("dl", { class: "evidence" },
+    h("dt", {}, t("watch.who")), h("dd", {}, h("span", { class: `verdict ${whoView[0]}` }, icon(whoView[1]), t(`watch.who.${who}`))),
+    h("dt", {}, t("watch.taking")), h("dd", {}, takingRow(w))),
+    h("p", { class: "muted small" }, t("watch.never_swallow"), w.simulated ? [" ", h("span", { class: "sim-note" }, "simulated")] : null));
+  return box;
+}
+
+/* After the tray is emptied the camera keeps watching for a few minutes, so the person can take the
+   medicine in front of it. Shown on Today and on the dose page until they say "I took it". */
+function takingPanel(s) {
+  const w = s.watch;
+  if (!w || !w.active || s.workflow.txn || !w.available) return null;
+  const doses = w.doses || [];
+  const pending = doses.filter((d) => !d.self_report);
+  if (!pending.length) return null;
+  const say = w.action_observed ? t("taking.seen") : t("taking.body");
+  return h("section", { class: "due-panel", "aria-label": t("taking.title") },
+    h("h2", { class: "due-name" }, t("taking.title")),
+    h("p", { class: "due-sub" }, say),
+    h("ul", { class: "due-items" }, doses.map((d) => h("li", {}, swatch(d.class_color), d.label, h("span", { class: "qty" }, `×\u00a0${d.quantity}`)))),
+    h("dl", { class: "evidence" }, h("dt", {}, t("watch.taking")), h("dd", {}, takingRow(w))),
+    h("p", { class: "muted small", style: "margin:.75rem 0 1.25rem" }, t("watch.never_swallow")),
+    h("div", { class: "due-actions" },
+      h("button", { class: "btn btn-primary btn-big ringed", disabled: !!S.busy,
+        onclick: () => act("confirm", () => Promise.all(pending.map((d) => api("/api/doses/confirm", { dose_id: d.dose_id })))).then((x) => x && toast(t("toast.confirm"))) },
+        icon("check"), t("due.mark")),
+      readButton(() => `${t("taking.title")}. ${say}`)));
+}
+
+/* "Did you take it?": released doses with no "I took it" and no hand-to-mouth movement seen. */
+function followPanels(s) {
+  return (s.followups || []).map((c) => {
+    const collect = c.followup === "collect";
+    const title = t(collect ? "follow.collect_title" : "follow.taken_title", { name: c.label });
+    const body = t(collect ? "follow.collect_body" : "follow.taken_body");
+    const later = h("button", { class: "btn btn-quiet", disabled: !!S.busy,
+      onclick: () => act("later", () => api("/api/doses/followup-later", { dose_id: c.dose_id })).then((x) => x && toast(t("follow.toast_later", { n: s.config.followup_minutes || 5 }))) },
+      icon("clock"), t("follow.later"));
+    const primary = collect && c.workflow_state === "RELEASED"
+      ? h("button", { class: "btn btn-primary btn-big ringed", onclick: () => go("verify") }, t("follow.go"), icon("arrow-right"))
+      : h("button", { class: "btn btn-primary btn-big ringed", disabled: !!S.busy, onclick: () => confirmTaken(c) }, icon("check"), t("follow.yes"));
+    return h("section", { class: "due-panel", "aria-label": title },
+      h("h2", { class: "due-name" }, title),
+      h("p", { class: "due-when" }, h("span", { class: "sun-chip", "aria-hidden": "true" }), whenText(c)),
+      h("p", { class: "due-sub" }, body),
+      h("ul", { class: "due-items" }, h("li", {}, swatch(c.class_color), t("due.count", { n: c.quantity }))),
+      h("div", { class: "due-actions" }, primary, later, readButton(() => `${title} ${body}`)));
+  });
+}
+
+function notifyFollowups(s) {
+  // Announce each follow-up once (screen readers), and as a desktop notification if those are on.
+  const fresh = (s.followups || []).filter((c) => !S.followSeen.has(`${c.dose_id}:${c.followup}`));
+  if (!fresh.length) return;
+  for (const c of fresh) S.followSeen.add(`${c.dose_id}:${c.followup}`);
+  const c = fresh[0];
+  const title = t(c.followup === "collect" ? "follow.collect_title" : "follow.taken_title", { name: c.label });
+  announce(title);
+  if (PREFS.notify && "Notification" in window && Notification.permission === "granted" && document.hidden) {
+    const n = new Notification(title, { body: t(c.followup === "collect" ? "follow.collect_body" : "follow.taken_body"), tag: "doseguard-follow" });
+    n.onclick = () => { window.focus(); go("today"); n.close(); };
+  }
+}
+
+function stockNotes(s) {
+  const low = (s.cartridges || []).filter((c) => c.used && (c.low || c.empty));
+  if (!low.length) return null;
+  return h("div", { class: "blocker" }, icon("package"), h("div", {}, low.map((c) =>
+    h("div", {}, t(c.empty ? "stock.empty" : "stock.low", { cart: c.cartridge, name: c.label, n: c.count })))));
 }
 
 function evidenceList(tx) {
@@ -1093,7 +1239,10 @@ function renderNoTxn(s) {
   const done = s.today.filter((c) => ["RELEASED", "COMPLETE"].includes(c.workflow_state) && c.delivery_mode === "DEVICE");
   const b = startBlockers(s);
   const stack = h("div", { class: "stack" });
-  if (!startable.length) {
+  const taking = takingPanel(s);
+  if (taking) stack.append(taking);
+  followPanels(s).forEach((p) => stack.append(p));
+  if (!startable.length && !taking) {
     stack.append(calmPanel(t("verify.none_title"), t("verify.none_body"),
       h("button", { class: "btn", onclick: () => go("today") }, icon("sun-horizon"), t("nav.today"))));
   } else {
@@ -1118,7 +1267,7 @@ function renderNoTxn(s) {
     panel.append(ol);
     stack.append(panel);
   }
-  const ready = PREFS.simple ? null : h("section", { class: "panel" }, h("h2", {}, t("status.title")),
+  const ready = PREFS.simple || s.signed_out ? null : h("section", { class: "panel" }, h("h2", {}, t("status.title")),
     h("dl", { class: "kv", style: "margin-top:.5rem" },
       h("dt", {}, t("status.device")), h("dd", {}, s.device.connected ? (s.device.fault ? `Stopped: ${s.device.fault}` : "Connected") : "Not connected"),
       h("dt", {}, "Armed"), h("dd", {}, s.workflow.armed ? "Yes" : h("a", { href: "#device" }, "No. Arm it in Dispenser")),
@@ -1133,7 +1282,7 @@ function doorHead(active, locked = false) {
   const a = S.status && S.status.account;
   return h("div", { class: "door-head" },
     h("div", { class: "row" }, h("h1", {}, t("care.title")),
-      a && a.exists && !locked ? h("button", { class: "btn btn-quiet", type: "button", onclick: lockSetup }, icon("lock-simple"), t("lock.lock")) : null),
+      a && a.exists && !locked ? h("button", { class: "btn btn-quiet", type: "button", onclick: lockSetup }, icon("sign-out"), t("lock.lock")) : null),
     locked ? null : h("nav", { class: "subtabs", "aria-label": t("care.title") }, DOOR_TABS.map(([v, ic]) =>
       h("a", { href: `#${v}`, "aria-current": v === active ? "page" : null }, icon(ic), t(`nav.${v}`)))));
 }
@@ -1168,25 +1317,27 @@ function onboardNote(active) {
 
 function renderWelcome() {
   renderSky(null);
-  const name = h("input", { id: "acct-name", maxlength: 40, autocomplete: "name" });
+  const name = h("input", { id: "acct-name", maxlength: 29, autocomplete: "given-name" });
+  const last = h("input", { id: "acct-last", maxlength: 30, autocomplete: "family-name" });
   const pw = h("input", { id: "acct-pw", type: "password", maxlength: 128, autocomplete: "new-password" });
   const pw2 = h("input", { id: "acct-pw2", type: "password", maxlength: 128, autocomplete: "new-password" });
   const err = h("p", { class: "field-error", role: "alert" });
   async function create(ev) {
     ev.preventDefault();
     err.textContent = "";
-    const n = name.value.trim();
+    const n = name.value.trim(), l = last.value.trim();
     if (!n) return (err.textContent = t("account.name_needed"));
+    if (!l) return (err.textContent = t("account.last_needed"));
     if (pw.value.length < 8) return (err.textContent = t("account.short"));
     if (pw.value !== pw2.value) return (err.textContent = t("account.mismatch"));
     try {
       S.busy = "account";
-      await api("/api/account/create", { name: n, password: pw.value }, { noRetry: true });
+      const made = await api("/api/account/create", { first_name: n, last_name: l, password: pw.value }, { noRetry: true });
       setOnboarding(true);
       S.setup = null;
       S.prefillName = n;
       S.busy = null;
-      if (S.status) S.status.account = { exists: true, name: n, unlocked: true };
+      if (S.status) S.status.account = { exists: true, name: made.name, first_name: made.first_name, unlocked: true };
       S.keys = {};
       go("setup");
     } catch (e) {
@@ -1200,7 +1351,9 @@ function renderWelcome() {
       h("div", {}, h("h1", {}, t("welcome.title")), h("p", { class: "lede" }, t("welcome.sub")))),
     onboardSteps(0),
     h("form", { class: "panel welcome-form", onsubmit: create },
-      h("label", { class: "field", for: "acct-name" }, t("account.name"), name),
+      h("div", { class: "two" },
+        h("label", { class: "field", for: "acct-name" }, t("account.first"), name),
+        h("label", { class: "field", for: "acct-last" }, t("account.last"), last)),
       h("label", { class: "field", for: "acct-pw" }, t("account.password"), pw),
       h("label", { class: "field", for: "acct-pw2" }, t("account.password2"), pw2),
       h("p", { class: "muted" }, t("account.password_help")),
@@ -1209,7 +1362,7 @@ function renderWelcome() {
   name.focus();
 }
 
-function unlockPanel() {
+function unlockPanel(autofocus = true) {
   const a = S.status.account;
   const pw = h("input", { id: "unlock-pw", type: "password", maxlength: 128, autocomplete: "current-password" });
   const err = h("p", { class: "field-error", role: "alert" });
@@ -1220,6 +1373,7 @@ function unlockPanel() {
       const r = await api("/api/account/unlock", { password: pw.value }, { noRetry: true });
       S.status.account = { ...S.status.account, ...r, unlocked: true };
       S.lastUnlocked = true;
+      S.signin = null;
       toast(t("lock.unlocked"));
       route();
     } catch (e) {
@@ -1232,15 +1386,19 @@ function unlockPanel() {
       pw.focus();
     }
   }
-  setTimeout(() => pw.isConnected && pw.focus(), 0);
+  if (autofocus) setTimeout(() => pw.isConnected && pw.focus(), 0);
+  const first = a.first_name || a.name || "";
   return h("section", { class: "panel unlock" },
-    h("div", { class: "status-big" }, h("span", { class: "orb", "aria-hidden": "true" }, icon("lock-simple")),
-      h("div", {}, h("h2", {}, t("lock.title")), h("p", {}, t("lock.sub", { name: a.name || "" })))),
+    h("div", { class: "status-big" }, h("span", { class: "orb", "aria-hidden": "true" }, icon("user-circle")),
+      h("div", {}, h("h2", {}, t("lock.title", { name: first })), h("p", {}, t("lock.sub")))),
     h("form", { class: "unlock-form", onsubmit: unlock },
+      h("p", { class: "strong" }, a.name || ""),
       h("label", { class: "field", for: "unlock-pw" }, t("account.password"), pw),
       err,
-      h("div", { class: "row" }, h("button", { class: "btn btn-primary", type: "submit" }, icon("lock-key-open"), t("lock.unlock")))),
-    h("p", { class: "muted small", style: "margin-top:1rem" }, t("lock.forgot")));
+      h("div", { class: "row" }, h("button", { class: "btn btn-primary", type: "submit" }, icon("sign-in"), t("lock.unlock")))),
+    h("p", { class: "muted small", style: "margin-top:1rem" }, t("lock.forgot")),
+    h("details", { class: "more" }, h("summary", {}, icon("caret-right"), t("lock.not_me", { name: first })),
+      h("div", { class: "more-body" }, h("p", { class: "muted" }, t("lock.not_me_body", { name: first })))));
 }
 
 async function lockSetup() {
@@ -1248,6 +1406,7 @@ async function lockSetup() {
     await api("/api/account/lock", {}, { noRetry: true });
     if (S.status && S.status.account) S.status.account.unlocked = false;
     S.lastUnlocked = false;
+    S.signin = null;
     route();
   } catch (e) {
     toast(friendlyError(e), true);
@@ -1320,6 +1479,37 @@ const setup = {
   },
 };
 
+/* Someone else will use this Healthbox: archive this person, keep their history, start the welcome again. */
+function handoverBlock(name) {
+  const emptied = h("input", { type: "checkbox" });
+  const typed = h("input", { id: "ho-name", maxlength: 40, autocomplete: "off" });
+  const pw = h("input", { id: "ho-pw", type: "password", maxlength: 128, autocomplete: "current-password" });
+  const go = async () => {
+    try {
+      S.busy = "handover";
+      await api("/api/account/handover", { password: pw.value, confirm_name: typed.value, emptied: emptied.checked }, { noRetry: true });
+      pw.value = "";
+      setOnboarding(true);
+      S.setup = null;
+      toast(`Done. ${name}'s history is kept. Now set up Healthbox for the new person.`);
+      route();
+    } catch (e) {
+      pw.value = "";
+      toast(friendlyError(e), true);
+    } finally {
+      S.busy = null;
+    }
+  };
+  return h("details", { class: "more", style: "margin-top:1.5rem" },
+    h("summary", {}, icon("caret-right"), "Someone else will use this Healthbox"),
+    h("div", { class: "more-body stack", style: "gap:1rem" },
+      h("p", { class: "muted" }, `This removes ${name}'s face, medicines, reminders and account from this laptop. ${name}'s history and tray photos stay readable in History. Then the welcome setup starts for the new person, who makes their own account.`),
+      h("label", { class: "check" }, emptied, h("span", {}, `I emptied both cartridges and the tray. ${name}'s medicine must not go to the next person.`)),
+      h("label", { class: "field", for: "ho-name" }, `Type ${name} to confirm`, typed),
+      h("label", { class: "field", for: "ho-pw" }, `${name}'s password`, pw),
+      h("div", { class: "row" }, h("button", { class: "btn btn-danger", type: "button", onclick: go }, icon("user-switch"), "Give Healthbox to someone else"))));
+}
+
 function blankEntry(data) {
   return { entry_key: "", label: "", strength_text: "", quantity: 1, delivery_mode: "DEVICE", schedule: "SCHEDULED",
     min_interval_hours: 4, max_per_day: 3,
@@ -1333,41 +1523,47 @@ function drawSetup() {
   const errFor = (i, f) => st.errors.filter((e) => e.entry === i && e.field === f).map((e) => h("div", { class: "field-error" }, e.message));
   const globalErr = st.errors.filter((e) => e.entry == null && e.field !== "person_id" && e.field !== "timezone").map((e) => h("div", { class: "field-error" }, e.message));
 
-  // 1. Whose medicine: the face the camera checks.
-  const acctName = (S.status && S.status.account && S.status.account.name) || S.prefillName || "";
-  const nameIn = h("input", { id: "enroll-name", placeholder: "e.g. Jackson", maxlength: 40, value: data.persons.length ? "" : acctName });
+  // 1. Whose medicine: one person per Healthbox. The account's name is the only name; enrolling again
+  //    retakes the same person's face. Someone new takes over with "Give Healthbox to someone else".
+  const acctName = (S.status && S.status.account && S.status.account.name) || "";
+  const me = data.persons.at(-1) || null;
+  if (me) d.person_id = me.person_id;
+  const nameIn = acctName || me ? null : h("input", { id: "enroll-name", placeholder: "e.g. Jackson", maxlength: 40, value: S.prefillName || "" });
   const consent = h("input", { type: "checkbox", id: "consent" });
-  const persons = data.persons.length
-    ? h("div", { class: "stack", style: "gap:.5rem" }, data.persons.map((p) =>
-      h("label", { class: "choice" + (d.person_id === p.person_id ? " on" : "") }, h("input", { type: "radio", name: "person", checked: d.person_id === p.person_id, onchange: () => { d.person_id = p.person_id; drawSetup(); } }),
-        h("span", {}, h("strong", {}, p.label), p.simulated ? h("span", { class: "sim-note", style: "margin-left:.5rem" }, "simulated") : null,
-          h("small", {}, `Agreed ${new Date(p.consent_at).toLocaleDateString()}`)))))
-    : h("p", { class: "empty" }, "Nobody is set up yet.");
-  const enrollBtn = h("button", { class: "btn btn-primary", disabled: !!S.busy, onclick: enroll }, icon("user-focus"), data.camera_simulated ? "Add face (simulated camera)" : "Take reference pictures");
+  const who = me
+    ? h("div", { class: "choice on" }, icon("user-circle"),
+        h("span", {}, h("strong", {}, me.label), me.simulated ? h("span", { class: "sim-note", style: "margin-left:.5rem" }, "simulated") : null,
+          h("small", {}, `Face added ${new Date(me.consent_at).toLocaleDateString()}`)))
+    : acctName ? h("p", { class: "strong" }, `For ${acctName}`) : null;
+  const enrollBtn = h("button", { class: me ? "btn" : "btn btn-primary", disabled: !!S.busy, onclick: enroll }, icon(me ? "arrow-counter-clockwise" : "user-focus"),
+    me ? "Retake my face" : data.camera_simulated ? "Add face (simulated camera)" : "Take reference pictures");
   let livePreview = null;
   if (!data.camera_simulated) {
     if (!S.cameraImg) S.cameraImg = h("img", { alt: "Live camera preview" });
     S.faceHint = S.faceHint || h("p", { class: "strong", style: "margin-top:.5rem", "aria-live": "polite" }, "Looking for a face.");
     livePreview = h("div", { style: "max-width:360px" }, h("div", { class: "camera" }, S.cameraImg), S.faceHint);
   }
-  const step1 = h("section", { class: "panel" }, h("h3", {}, "Whose medicine is this?"),
-    h("p", { class: "muted", style: "margin:.25rem 0 1rem" }, "The camera checks this face before the tray opens. Pictures stay on this laptop. A face match is a prototype check, not secure identity."),
-    persons,
+  const step1 = h("section", { class: "panel" }, h("h3", {}, me ? "Your face" : "Whose medicine is this?"),
+    h("p", { class: "muted", style: "margin:.25rem 0 1rem" }, "Healthbox is for one person. The camera checks this face before the tray opens. Pictures stay on this laptop. A face match is a prototype check, not secure identity."),
+    who,
     h("div", { class: "two", style: "margin-top:1.25rem" },
       h("div", { class: "stack", style: "gap:1rem" },
-        h("label", { class: "field", for: "enroll-name" }, onboarding() && !data.persons.length ? "Your name for the face check" : "Add someone new", nameIn),
-        h("label", { class: "check" }, consent, h("span", {}, "This person agrees to have reference pictures taken and kept only on this laptop.")),
+        nameIn ? h("label", { class: "field", for: "enroll-name" }, "Your name for the face check", nameIn) : null,
+        h("label", { class: "check" }, consent, h("span", {}, me ? "I agree to new reference pictures, kept only on this laptop. They replace the old ones."
+          : "I agree to have reference pictures taken and kept only on this laptop.")),
         h("div", { class: "row" }, enrollBtn),
         data.camera_simulated ? null : h("p", { class: "muted small" }, "While capturing, face the camera alone and turn slightly left and right.")),
       livePreview),
+    acctName && me ? handoverBlock(acctName) : null,
     errFor(undefined, "person_id"),
     st.errors.filter((e) => e.entry == null && e.field === "person_id").map((e) => h("div", { class: "field-error" }, e.message)));
   async function enroll() {
-    if (!nameIn.value.trim()) return toast("Enter a name first.", true);
+    const label = acctName || (me && me.label) || (nameIn && nameIn.value.trim()) || "";
+    if (!label) return toast("Enter a name first.", true);
     if (!consent.checked) return toast("Tick the agreement box first.", true);
     if (!data.camera_simulated) toast("Capturing. Look at the camera and turn your head slightly left and right.");
-    const r = await act("enroll", () => api("/api/enroll", { label: nameIn.value.trim(), consent: true }));
-    if (r) { d.person_id = r.person_id; toast("Face added."); if (onboarding()) st.step = 1; setup.render(); }
+    const r = await act("enroll", () => api("/api/enroll", { label, consent: true }));
+    if (r) { d.person_id = r.person_id; toast(r.retaken ? "Face updated." : "Face added."); if (onboarding()) st.step = 1; setup.render(); }
   }
 
   // 2. Medicines
@@ -1688,7 +1884,16 @@ const historyView = {
     }
     const list = h("section", { class: "panel" });
     if (!S.history.length) list.append(h("p", { class: "empty" }, "No doses recorded yet."));
-    for (const c of S.history) {
+    // Records of someone this Healthbox was handed over from sit at the end, under their name.
+    const mine = S.history.filter((c) => !c.earlier_person), earlier = S.history.filter((c) => c.earlier_person);
+    if (!mine.length && earlier.length) list.append(h("p", { class: "empty" }, "No doses of yours yet."));
+    let lastOwner = null;
+    for (const c of [...mine, ...earlier]) {
+      if (c.earlier_person && c.earlier_person !== lastOwner) {
+        lastOwner = c.earlier_person;
+        list.append(h("h3", { class: "hist-owner" }, `Earlier: ${c.earlier_person}`),
+          h("p", { class: "muted small" }, `From before Healthbox was handed over. Kept for reference; nothing here affects the current person.`));
+      }
       list.append(h("button", { type: "button", class: "hist-row" + (S.historySel === c.dose_id ? " sel" : ""), onclick: () => selectHistory(c.dose_id) },
         h("div", {}, h("div", { class: "when" }, c.schedule === "AS_NEEDED" ? "As needed" : c.due_local), h("div", { class: "date" }, c.local_date)),
         h("div", {}, h("div", { class: "strong" }, ...doseLine(c)), h("div", { class: "muted small" }, modeText(c))),
@@ -1714,6 +1919,8 @@ const EVENT_TEXT = {
   DISPENSE_RESERVED: "Dispense reserved", CYCLE_DONE: "Motion finished", RELEASE_RESERVED: "Unlock reserved", RELEASED: "Tray unlocked",
   DOSE_COMPLETE: "Complete", USER_CONFIRMED: "You said you took it", SELF_REPORT: "You said you took it", WORKFLOW_CANCELLED: "Cancelled",
   SUPERVISED_RESET: "Recovery run", LATCH_LOCKED: "Tray locked", DISPENSE_CYCLE_DONE: "Motion finished",
+  ACTION_OBSERVED: "Hand-to-mouth movement seen (not proof of swallowing)", ACTION_NOT_OBSERVED: "No hand-to-mouth movement seen",
+  FOLLOWUP_LATER: "Asked again later", CARTRIDGE_FILLED: "Cartridge filled", FILL_CHECK: "Pill checked before filling",
 };
 
 function eventLine(e) {
@@ -1729,6 +1936,30 @@ function eventLine(e) {
   return h("li", {}, h("span", { class: "muted tnum" }, e.ts_local), h("span", {}, h("span", { class: "k" }, EVENT_TEXT[e.kind] || e.kind), extra ? h("span", { class: "muted" }, `. ${extra}`) : null));
 }
 
+const OBS_TEXT = { FACE_MATCH: "Your face", TRAY_EMPTY: "Empty tray", CLASS_COUNTS: "Dose count", COLLECTED_BY: "Who emptied the tray",
+  ACTION_OBSERVED: "Hand to mouth" };
+const RESULT_TEXT = { PASS: "passed", FAIL: "did not pass", UNCERTAIN: "unclear", NOT_OBSERVED: "not seen" };
+
+function cameraRecord(det) {
+  const c = det.dose;
+  if (c.delivery_mode !== "DEVICE" || !det.observations.length) return null;
+  const who = { RECIPIENT: "You: your face was in view", OTHER_PERSON: "Someone else was in view", NOT_SEEN: "Not seen: no face in view" }[c.collected_by];
+  const act = { OBSERVED: "Seen. This is not proof of swallowing.", NOT_OBSERVED: "Not seen" }[c.action];
+  const photos = det.observations.filter((o) => o.details && o.details.photo);
+  return h("div", {},
+    h("h3", { style: "margin:1.5rem 0 .25rem" }, "What the camera recorded"),
+    h("dl", { class: "evidence" },
+      h("dt", {}, "Who took the pills out"), h("dd", {}, who || (c.collection === "PENDING" ? "Not checked (finished without checking)" : "Not recorded")),
+      h("dt", {}, "Hand to mouth"), h("dd", {}, act || "Not recorded"),
+      h("dt", {}, "You said you took it"), h("dd", {}, c.self_report ? "Yes" : "No")),
+    photos.length ? h("div", { class: "proof-grid" }, photos.map((o) => {
+      const fig = proofPhoto({ photo: o.details.photo, simulated: !!o.simulated });
+      fig.querySelector("figcaption").replaceChildren(`${OBS_TEXT[o.kind] || o.kind}: ${RESULT_TEXT[o.result] || o.result}`,
+        o.simulated ? h("span", { class: "sim-note" }, "simulated") : null);
+      return fig;
+    })) : null);
+}
+
 function detailPanel() {
   const det = S.historyDetail;
   if (!det) return h("section", { class: "panel" }, h("p", { class: "empty" }, "Choose a dose to see everything that happened."));
@@ -1736,6 +1967,7 @@ function detailPanel() {
   return h("section", { class: "panel" },
     h("h2", {}, ...doseLine(c)), h("p", { class: "muted", style: "margin:.25rem 0 .75rem" }, `${c.local_date} ${c.due_local}. ${modeText(c)}.`),
     stateTag(c),
+    cameraRecord(det),
     h("h3", { style: "margin:1.5rem 0 .5rem" }, "What happened"),
     h("ul", { class: "events" }, det.events.map(eventLine)),
     det.commands.length ? [h("h3", { style: "margin:1.5rem 0 .5rem" }, "Dispenser commands"),
@@ -1746,7 +1978,8 @@ function detailPanel() {
 
 /* ---------------------------------------------------------------- Dispenser */
 const device = {
-  key: (s) => [{ ...s.device, heartbeat_age_ms: null }, s.simulator, s.vision, s.ai, s.workflow.armed, s.workflow.pending_operation, !!s.workflow.txn, s.camera.mode, s.token_classes, s.demo_mode, s.plan && s.plan.entries],
+  key: (s) => [{ ...s.device, heartbeat_age_ms: null }, s.simulator, s.vision, s.ai, s.workflow.armed, s.workflow.pending_operation, !!s.workflow.txn, s.camera.mode, s.token_classes, s.demo_mode, s.plan && s.plan.entries,
+    s.cartridges, s.look_alike, s.look_alike_blocks, S.fill],
   tick(s) {
     const el = document.getElementById("hb-age");
     if (el) el.textContent = s.device.heartbeat_age_ms == null ? "-" : `${s.device.heartbeat_age_ms} ms`;
@@ -1794,7 +2027,7 @@ const device = {
       h("div", { class: "row", style: "margin-top:1.5rem" },
         h("button", { class: "btn btn-danger", disabled: !!S.busy, onclick: () => act("reset", () => api("/api/device/reset", { inspected: resetChk.checked })).then((x) => x && toast("Recovery sent. Arm it again when ready.")) }, icon("arrow-counter-clockwise"), "Run recovery")));
 
-    const blocks = [summary, h("div", { class: "two" }, armPanel, resetPanel), metricsPanel(s), pillTypesPanel(s)];
+    const blocks = [summary, h("div", { class: "two" }, armPanel, resetPanel), cartridgesPanel(s), pillTypesPanel(s), metricsPanel(s)];
     if (s.demo_mode) blocks.push(demoPanel(s));
     if (s.simulator) blocks.push(h("section", { class: "panel" }, h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, icon("caret-right"), "Hardware simulator (for testing)"), h("div", { class: "more-body" }, simPanel(s)))));
     blocks.push(h("section", { class: "panel" }, h("details", { class: "more", style: "margin-top:0" }, h("summary", {}, icon("caret-right"), "Developer and demo mode"), h("div", { class: "more-body" }, devPanel(s)))));
@@ -1827,6 +2060,82 @@ function metricsPanel(s) {
     body);
 }
 
+/* Cartridges: an estimated pill count, and a fill step that checks one pill from the bottle first. */
+function cartridgesPanel(s) {
+  const rows = (s.cartridges || []).map((c) => {
+    const count = c.count == null ? "Not counted yet" : `About ${c.count} pill${c.count === 1 ? "" : "s"} left`;
+    const sub = [c.used ? null : "Not used by your medicines",
+      c.days_left != null ? `about ${c.days_left} day${c.days_left === 1 ? "" : "s"} at ${c.per_day} a day` : null,
+      c.filled_at ? `filled ${fmtWhen(c.filled_at)}` : null].filter(Boolean).join(", ");
+    const tag = c.empty ? h("span", { class: "tag" }, h("span", { class: "mark alert" }), "May be empty")
+      : c.low ? h("span", { class: "tag" }, h("span", { class: "mark wait" }), "Running low") : null;
+    const open = S.fill && S.fill.cartridge === c.cartridge;
+    return h("div", { class: "cart-row" },
+      h("div", { class: "pill-type" }, swatch(c.color),
+        h("div", {}, h("div", { class: "row" }, h("span", { class: "strong" }, `Cartridge ${c.cartridge}`), h("span", { class: "muted" }, c.label), tag),
+          h("div", {}, count), sub ? h("div", { class: "muted small" }, sub) : null),
+        open ? null : h("button", { class: "btn", disabled: !!S.busy || !!s.workflow.txn, onclick: () => { S.fill = { cartridge: c.cartridge, result: null }; rerender(true); } },
+          icon("plus-circle"), "Fill cartridge")),
+      open ? fillFlow(s, c) : null);
+  });
+  return h("section", { class: "panel" }, h("h3", {}, "Cartridges"),
+    h("p", { class: "muted", style: "margin:.4rem 0 .75rem" },
+      "Before filling a cartridge, the camera checks one pill from the bottle against that cartridge's pill type. The count goes down by one for each pill the dispenser moves, so it is an estimate. Check it when you refill."),
+    rows);
+}
+
+function fillFlow(s, c) {
+  const f = S.fill;
+  const meds = ((s.plan && s.plan.entries) || []).filter((e) => e.delivery_mode === "DEVICE" && e.cartridge === c.cartridge);
+  const box = h("div", { class: "fill-flow" });
+  box.append(h("p", { class: "strong" }, `1. Find the bottle for cartridge ${c.cartridge}`),
+    meds.length ? h("ul", { class: "fill-meds" }, meds.map((e) => h("li", {},
+      e.label_id ? h("a", { href: `/api/labels/${e.label_id}/image?i=0`, target: "_blank" }, h("img", { src: `/api/labels/${e.label_id}/image?i=0`, alt: `Label photo for ${e.label}` })) : null,
+      h("span", {}, h("span", { class: "strong" }, e.label), e.strength_text ? h("span", { class: "muted" }, `, ${e.strength_text}`) : null,
+        h("span", { class: "muted small" }, e.label_id ? " Compare this label with the bottle in your hand." : " No label photo saved."))))) 
+      : h("p", { class: "muted" }, "No medicine in your plan uses this cartridge."),
+    h("p", { class: "strong", style: "margin-top:1rem" }, "2. Put one pill from that bottle in the tray"),
+    h("p", { class: "muted small" }, "Open the door, place one pill where the camera can see all four corner squares, and check it. Take the pill back out afterwards."));
+  if (s.simulator) {
+    const sim = (body) => api("/api/sim/hardware", body).then(() => toast("Simulator updated.")).catch((e) => toast(e.message, true));
+    const other = c.cartridge === "A" ? "B" : "A";
+    box.append(h("div", { class: "row", style: "margin-top:.5rem" },
+      h("span", { class: "sim-note" }, "simulator"),
+      h("button", { class: "btn btn-quiet", onclick: () => sim({ action: "place_token", channel: c.cartridge, n: 1 }) }, `Put one cartridge ${c.cartridge} pill in the tray`),
+      h("button", { class: "btn btn-quiet", onclick: () => sim({ action: "place_token", channel: other, n: 1 }) }, `Put a cartridge ${other} pill in instead`),
+      h("button", { class: "btn btn-quiet", onclick: () => Promise.all(["A", "B"].map((ch) => sim({ action: "place_token", channel: ch, n: -9 }))) }, "Empty the tray")));
+  }
+  const checkBtn = h("button", { class: "btn btn-primary", disabled: !!S.busy,
+    onclick: () => act("fillcheck", () => api("/api/cartridges/check-pill", { cartridge: c.cartridge })).then((x) => { if (x) { S.fill = { cartridge: c.cartridge, result: x }; rerender(true); } }) },
+    icon("camera"), f.result ? "Check again" : "Check this pill");
+  box.append(h("div", { class: "row", style: "margin-top:.75rem" }, checkBtn,
+    h("button", { class: "btn btn-quiet", onclick: () => { S.fill = null; rerender(true); } }, "Cancel")));
+  const r = f.result;
+  if (r) {
+    const pass = r.result === "PASS";
+    box.append(pass
+      ? h("div", { class: "blocker", role: "status" }, icon("check-circle"), h("div", {}, h("div", { class: "strong" }, "This pill matches"), r.message))
+      : h("div", { class: "alert-box", role: "alert", style: "margin:1rem 0 0" }, icon("warning-circle"), h("div", {}, h("div", { class: "what" }, "Don't fill yet"), h("div", { class: "next" }, r.message))),
+      proofPhoto({ photo: r.photo, simulated: r.simulated }));
+    if (pass) {
+      const n = h("input", { type: "number", min: 0, max: 500, value: c.count ?? "", inputmode: "numeric", "aria-label": `Pills in cartridge ${c.cartridge} now`, style: "max-width:8rem" });
+      box.append(h("p", { class: "strong", style: "margin-top:1rem" }, `3. Pour the bottle into cartridge ${c.cartridge}, then count`),
+        h("label", { class: "field" }, "How many pills are in the cartridge now?", n),
+        h("div", { class: "row", style: "margin-top:.75rem" },
+          h("button", { class: "btn btn-primary", disabled: !!S.busy, onclick: () => {
+            const v = Number(n.value);
+            if (!Number.isInteger(v) || v < 0 || v > 500) { toast("Enter a whole number from 0 to 500.", true); return; }
+            act("fill", () => api("/api/cartridges/fill", { cartridge: c.cartridge, count: v })).then((x) => {
+              if (!x) return;
+              S.fill = null;
+              toast(`Cartridge ${c.cartridge}: ${v} pills recorded. Take the checked pill out of the tray.`);
+            });
+          } }, "Save count")));
+    }
+  }
+  return box;
+}
+
 function pillTypesPanel(s) {
   const sim = s.camera.simulated;
   const rows = s.token_classes.map((c) => {
@@ -1840,12 +2149,21 @@ function pillTypesPanel(s) {
         h("div", { class: "muted small", style: "margin-top:.25rem" }, desc)),
       h("button", { class: "btn", disabled: sim || !!S.busy || !!s.workflow.txn,
         onclick: () => act("calibrate", () => api("/api/tray/calibrate", { class_id: c.class_id, label: name.value }))
-          .then((x) => x && toast(`Calibrated: ${x.shape.kind}, size ${Math.round(x.shape.area)} px.`)) }, "Calibrate with one pill"));
+          .then((x) => {
+            if (!x) return;
+            if (x.look_alike && x.look_alike.length) toast(x.look_alike[0].message, true);
+            else toast(`Calibrated: ${x.shape.kind}, size ${Math.round(x.shape.area)} px.`);
+          }) }, "Calibrate with one pill"));
   });
+  const alike = (s.look_alike || []).map((p) => h("div", { class: "alert-box", role: "alert" }, icon("warning-circle"),
+    h("div", {}, h("div", { class: "what" }, "These pill types look alike to the camera"), h("div", { class: "next" }, p.message),
+      s.look_alike_blocks ? h("div", { class: "detail" }, "Doses can't start until this is fixed, because one pill would be counted as both types.")
+        : h("div", { class: "detail" }, "The tray is simulated right now, so this does not block doses yet. It will with the real camera."))));
   return h("section", { class: "panel" }, h("h3", {}, "Pill types"),
     h("p", { class: "muted", style: "margin:.4rem 0 .75rem" },
-      "Teach the camera each pill's colour and shape. Put exactly one pill of that type in the tray, point the camera so all four corner squares show, and press Calibrate. White pills need a dark matte tray."),
+      "Teach the camera each pill's colour and shape. Put exactly one pill of that type in the tray, point the camera so all four corner squares show, and press Calibrate. White pills need a dark matte tray. Use clearly different colours for cartridges A and B."),
     sim ? h("p", { class: "note", style: "margin-bottom:.75rem" }, "Calibration needs the real camera, which is turned off in this demo.") : null,
+    alike,
     rows,
     h("p", { class: "muted small", style: "margin-top:.75rem" }, "Colour and shape only check that the right kind of object is in the tray. They do not prove which medicine or strength it is."));
 }
@@ -1991,7 +2309,10 @@ function route() {
   S.keys = {};
   if (needsWelcome(S.status)) { S.keys.__welcome = 1; renderWelcome(); main.focus({ preventScroll: true }); return; }
   if (S.view !== "today") renderSky(null);
-  if (S.view === "setup") setup.render();
+  if (DOOR_VIEWS.includes(S.view) && setupLocked()) { S.keys[S.view] = "signed-out"; doorMain(S.view); main.focus({ preventScroll: true }); return; }
+  // Setup draws once (its forms keep their own state), so it waits for the first status: it needs the
+  // account's name and the Sign out button.
+  if (S.view === "setup") { if (S.status) setup.render(); else S.setupPending = true; }
   else if (S.status) VIEWS[S.view].render(S.status);
   main.focus({ preventScroll: true });
 }

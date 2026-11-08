@@ -12,12 +12,15 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from . import evidence
 from .camera import CaptureManager, Frame
 from .config import Settings
+from .evidence import simulated_tray
 from .hardware import HardwareAdapter
 from .reasons import count_mismatch_sentence, message
 from .store import Store
-from .timeutil import Clock
+from .taking import ActionTracker, PalmDetector, Sample, Watch
+from .timeutil import Clock, iso
 
 log = logging.getLogger("doseguard.vision")
 
@@ -25,6 +28,7 @@ YUNET_FILE = "face_detection_yunet_2023mar.onnx"
 SFACE_FILE = "face_recognition_sface_2021dec.onnx"
 SIM_FACE = ("recipient", "unknown", "two_faces", "none")
 SIM_TRAY = ("auto", "touching", "markers_missing", "blurry")
+SIM_ACTION = ("taken", "not_seen")  # simulated hand-to-mouth movement after release
 
 
 @dataclass
@@ -183,13 +187,12 @@ class TrayInspector:
         return cv2.morphologyEx(cv2.morphologyEx(mask, cv2.MORPH_OPEN, k), cv2.MORPH_CLOSE, k)
 
     # -- counting ---------------------------------------------------------------
-    def analyze(self, img, classes: list[dict]) -> dict:
+    def _inspect(self, roi, classes: list[dict]) -> dict:
+        """Count each class in the tray area. Also returns where every counted object is, so the
+        photo proof can circle exactly what was counted."""
         import cv2
-        roi, info = self._warp(img)
-        if roi is None:
-            return info
         hsv = cv2.cvtColor(cv2.GaussianBlur(roi, (5, 5), 0), cv2.COLOR_BGR2HSV)
-        counts, problems = {}, []
+        counts, problems, blobs = {}, [], []
         for cls in classes:
             prof = self.profile(cls)
             contours, _ = cv2.findContours(self._mask(hsv, cls["hsv"]["ranges"]), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -202,6 +205,9 @@ class TrayInspector:
                 if verdict != "ok":
                     problems.append({"class_id": cls["class_id"], "verdict": verdict,
                                      "area": round(blob["area"]), "elongation": round(blob["elongation"], 2)})
+                (x, y), r = cv2.minEnclosingCircle(c)
+                blobs.append({"class_id": cls["class_id"], "x": round(float(x), 1), "y": round(float(y), 1),
+                              "r": round(float(r), 1), "verdict": verdict})
                 n += 1
             counts[cls["class_id"]] = n
         status = "ok"
@@ -209,7 +215,34 @@ class TrayInspector:
             if any(p["verdict"] == v for p in problems):
                 status = v
                 break
-        return {"status": status, "counts": counts, "problems": problems[:6], **info}
+        return {"status": status, "counts": counts, "problems": problems[:6], "blobs": blobs[:24]}
+
+    def analyze(self, img, classes: list[dict]) -> dict:
+        roi, info = self._warp(img)
+        if roi is None:
+            return info
+        return {**self._inspect(roi, classes), **info}
+
+    def render_evidence(self, img, classes: list[dict]):
+        """The tray area of one frame with each counted pill circled and tagged (A1, B1...).
+        Returns None when the tray area cannot be found, so nothing outside the tray is ever kept."""
+        import cv2
+        from .evidence import SCALE, draw_marks
+        roi, _ = self._warp(img)
+        if roi is None:
+            return None
+        res = self._inspect(roi, classes)
+        out = cv2.resize(roi, (roi.shape[1] * SCALE, roi.shape[0] * SCALE), interpolation=cv2.INTER_CUBIC)
+        by_id = {c["class_id"]: c for c in classes}
+        seen: dict[str, int] = {}
+        marks = []
+        for b in res["blobs"]:
+            cls = by_id.get(b["class_id"], {})
+            seen[b["class_id"]] = seen.get(b["class_id"], 0) + 1
+            marks.append({"x": b["x"] * SCALE, "y": b["y"] * SCALE, "r": b["r"] * SCALE, "color": cls.get("color"),
+                          "tag": f"{cls.get('cartridge') or '?'}{seen[b['class_id']]}", "ok": b["verdict"] == "ok"})
+        draw_marks(out, marks)
+        return out
 
     # -- calibration --------------------------------------------------------------
     def measure_single(self, img) -> dict:
@@ -262,6 +295,45 @@ class TrayInspector:
 
 
 # ------------------------------------------------------------------------------------
+# Look-alike pill types
+# ------------------------------------------------------------------------------------
+def _in_ranges(hsv: list, ranges: list) -> bool:
+    h, sat, v = (int(x) for x in hsv)
+    return any(lo[0] <= h <= hi[0] and lo[1] <= sat <= hi[1] and lo[2] <= v <= hi[2] for lo, hi in ranges)
+
+
+def typical_hsv(cls: dict) -> list | None:
+    """The colour a pill of this type usually shows: the calibrated sample, or the middle of
+    its starting range for a type that was never calibrated."""
+    hsv = cls.get("hsv") or {}
+    if hsv.get("sample_hsv"):
+        return list(hsv["sample_hsv"])
+    ranges = hsv.get("ranges") or []
+    if not ranges:
+        return None
+    lo, hi = ranges[0]
+    return [(lo[i] + hi[i]) // 2 for i in range(3)]
+
+
+def look_alike_pairs(classes: list[dict]) -> list[dict]:
+    """Pill types the tray camera cannot tell apart. Counting is by colour, so if one type's
+    usual colour falls inside another type's colour range, a single pill is counted as both
+    and every dose check would fail (or worse, a swap could go unnoticed). Setup must fix it."""
+    out = []
+    for i, a in enumerate(classes):
+        for b in classes[i + 1:]:
+            ha, hb = typical_hsv(a), typical_hsv(b)
+            if ha is None or hb is None:
+                continue
+            if _in_ranges(ha, b["hsv"].get("ranges") or []) or _in_ranges(hb, a["hsv"].get("ranges") or []):
+                out.append({"a": a["class_id"], "b": b["class_id"], "a_label": a["label"], "b_label": b["label"],
+                            "message": f"{a['label']} (cartridge {a.get('cartridge')}) and {b['label']} (cartridge {b.get('cartridge')}) "
+                                       "look too alike for the tray camera: their colours overlap. Use pills of clearly "
+                                       "different colours, then calibrate both again."})
+    return out
+
+
+# ------------------------------------------------------------------------------------
 # Service
 # ------------------------------------------------------------------------------------
 class VisionService:
@@ -273,7 +345,10 @@ class VisionService:
         self.clock = clock
         self.face = FaceEngine(settings.models_dir)
         self.tray = TrayInspector(settings)
-        self.sim = {"face": "recipient", "tray": "auto"}
+        self.sim = {"face": "recipient", "tray": "auto", "action": "taken"}
+        self.palm = PalmDetector(settings.models_dir)
+        self.watch: Watch | None = None
+        self._watch_task: asyncio.Task | None = None
         self._face_operation = asyncio.Lock()
         self._hint_lock = asyncio.Lock()
         self._hint: tuple[str, float, dict] | None = None
@@ -289,13 +364,110 @@ class VisionService:
 
     def status(self) -> dict:
         return {"simulated": self.simulated, "tray_bypass": bool(self.settings.tray_bypass) and not self.simulated,
-                "face_models": self.face.available(), "sim": dict(self.sim) if self.tray_simulated else None}
+                "face_models": self.face.available(), "palm_model": self.palm.available(),
+                "sim": dict(self.sim) if self.tray_simulated else None}
 
-    def set_sim(self, face: str | None = None, tray: str | None = None) -> None:
+    def set_sim(self, face: str | None = None, tray: str | None = None, action: str | None = None) -> None:
         if face in SIM_FACE:
             self.sim["face"] = face
         if tray in SIM_TRAY:
             self.sim["tray"] = tray
+        if action in SIM_ACTION:
+            self.sim["action"] = action
+
+    # -- collection watch: who empties the tray, and a hand-to-mouth movement ----------------
+    def start_watch(self, txn_id: str, person: dict | None) -> Watch:
+        """Start sampling the face camera for one released dose. Replaces any earlier watch."""
+        self.stop_watch()
+        s = self.settings
+        tracker = ActionTracker(s.action_near_ratio, s.action_far_ratio, s.action_min_near, s.action_near_window_s)
+        refs = None
+        if not self.simulated and person and not person.get("simulated") and self.face.available():
+            refs = self._load_refs(person)
+        available = self.simulated or refs is not None
+        w = Watch(txn_id, person["person_id"] if person else None, self.clock.monotonic(), tracker, available,
+                  self.simulated or self.palm.available(), self.simulated)
+        self.watch = w
+        if available:
+            self._watch_task = asyncio.create_task(self._watch_loop(w, refs), name=f"watch-{txn_id}")
+        return w
+
+    def stop_watch(self) -> None:
+        if self.watch:
+            self.watch.stopped = True
+        if self._watch_task:
+            self._watch_task.cancel()
+        self._watch_task = None
+
+    def watch_view(self, txn_id: str | None = None) -> dict | None:
+        w = self.watch
+        if not w or (txn_id and w.txn_id != txn_id):
+            return None
+        return w.view(self.settings.collector_min_samples)
+
+    async def _watch_loop(self, w: Watch, refs) -> None:
+        i, last_key = 0, None
+        while not w.stopped:
+            try:
+                if w.simulated:
+                    sample = self._sim_sample(i)
+                else:
+                    sample, last_key = await self._real_sample(refs, last_key, w.palms_available)
+                if sample is not None and not w.stopped:
+                    w.add(sample, iso(self.clock.now()))
+                    i += 1
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("collection watch sample failed")
+            await asyncio.sleep(self.settings.watch_interval_s)
+
+    def _sim_sample(self, i: int) -> Sample:
+        face = {"recipient": "match", "unknown": "unknown", "two_faces": "multi", "none": "none"}[self.sim["face"]]
+        recipient = face == "match"
+        palms = []
+        if self.sim["action"] == "taken" and recipient:
+            if i < 3:
+                palms = [{"score": 0.9, "box": [40.0, 380.0, 60.0, 60.0]}]  # hand down by the tray
+            elif i < 6:
+                palms = [{"score": 0.9, "box": [300.0, 250.0, 60.0, 60.0]}]  # hand at the mouth
+        return Sample(t=self.clock.monotonic(), face=face, recipient=recipient,
+                      mouth=(320.0, 240.0) if recipient else None, face_w=100.0 if recipient else None, palms=palms)
+
+    async def _real_sample(self, refs, last_key, palms_on: bool):
+        f = await self.camera.frame("face")
+        if f is None or self.clock.monotonic() - f.capture_mono > 0.5:
+            return None, last_key
+        key = (f.source_id, f.camera_session, f.seq)
+        if key == last_key:
+            return None, last_key
+        sample = await asyncio.to_thread(self._watch_analyze, f.image, refs, palms_on)
+        sample.t = f.capture_mono
+        return sample, key
+
+    def _watch_analyze(self, img, refs, palms_on: bool) -> Sample:
+        import numpy as np
+        fe, thr = self.face, self.settings.face_match_threshold
+        best = None
+        with fe._lock:
+            small, faces = fe._detect(img)
+            rows = [] if faces is None else list(faces)
+            for row in rows[:3]:
+                feat = fe._rec.feature(fe._rec.alignCrop(small, row)).flatten().astype("float32")
+                feat /= (np.linalg.norm(feat) + 1e-9)
+                sim = fe.best_similarity(feat, refs)
+                if sim >= thr and (best is None or sim > best[1]):
+                    best = (row, sim)
+        n = len(rows)
+        face = "none" if n == 0 else "multi" if n > 1 else ("match" if best else "unknown")
+        mouth = fw = None
+        if best is not None:
+            r = best[0]
+            mouth = (float(r[10] + r[12]) / 2, float(r[11] + r[13]) / 2)
+            fw = float(r[2])
+        palms = self.palm.detect(small) if palms_on else []
+        return Sample(t=0.0, face=face, recipient=best is not None, mouth=mouth, face_w=fw, palms=palms,
+                      palms_checked=palms_on)
 
     async def face_preview(self) -> dict:
         if self.simulated or not self.face.available():
@@ -509,6 +681,10 @@ class VisionService:
                 self._judge(obs, expected, observed, labels)
             if obs.reason_code and obs.result == "UNCERTAIN":
                 obs.message = message(obs.reason_code)
+            if scenario != "markers_missing":
+                shown = obs.details.get("observed") or (observed if scenario in ("touching", "blurry") else None)
+                img = await asyncio.to_thread(simulated_tray, classes, shown, scenario)
+                self._keep_photo(obs, img)
         else:
             frames, err = await self._collect("tray", lambda img: self.tray.analyze(img, classes))
             obs = Observation(kind, "UNCERTAIN", "aruco+hsv-contours")
@@ -541,6 +717,11 @@ class VisionService:
                         self._judge(obs, expected, counts[0], labels)
             if obs.result != "PASS" and obs.reason_code and not obs.message:
                 obs.message = message(obs.reason_code)
+            if frames:
+                # The newest frame of the check, cropped to the tray, every counted pill circled.
+                img = await asyncio.to_thread(self.tray.render_evidence, frames[-1][0].image, classes)
+                if img is not None:
+                    self._keep_photo(obs, img)
         rev_after = self.hardware.fields.get("rev")
         if rev_before != rev_after or session != self.hardware.session:
             obs.result, obs.reason_code = "UNCERTAIN", "TRAY_REVISION_CHANGED"
@@ -548,6 +729,11 @@ class VisionService:
         obs.tray_revision = rev_after
         obs.controller_session = self.hardware.session
         return obs
+
+    def _keep_photo(self, obs: Observation, img) -> None:
+        rel = evidence.save(self.settings.data_dir, img, self.settings.evidence_keep)
+        if rel:
+            obs.details["photo"] = rel
 
     async def calibrate_class(self) -> tuple[dict | None, str | None]:
         """Measure one pill over several frames; returns (profile, error)."""

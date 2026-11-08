@@ -262,6 +262,33 @@ class Store:
             " password_hash TEXT NOT NULL,"
             " created_at TEXT NOT NULL,"
             " updated_at TEXT NOT NULL)")
+        # Who emptied the tray (RECIPIENT, OTHER_PERSON, NOT_SEEN), whether a hand-to-mouth movement was
+        # seen (OBSERVED, NOT_OBSERVED), and when the "did you take it?" follow-up may show next.
+        # These are camera observations only: none of them means the medicine was swallowed.
+        for col in ("collected_by TEXT", "action TEXT", "followup_after TEXT"):
+            if col.split()[0] not in cols:
+                self.conn.execute(f"ALTER TABLE doses ADD COLUMN {col}")
+        acols = {r["name"] for r in self.conn.execute("PRAGMA table_info(account)").fetchall()}
+        if "first_name" not in acols:
+            self.conn.execute("ALTER TABLE account ADD COLUMN first_name TEXT")  # for greetings; name is the full name
+        # Handing Healthbox to someone else: the old person is archived (face removed, name kept for
+        # history) and their plan versions are marked, so Today, reminders and as-needed limits ignore them.
+        pcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(persons)").fetchall()}
+        if "archived_at" not in pcols:
+            self.conn.execute("ALTER TABLE persons ADD COLUMN archived_at TEXT")
+        vcols = {r["name"] for r in self.conn.execute("PRAGMA table_info(plan_versions)").fetchall()}
+        for col in ("handed_over_at TEXT", "handed_over_name TEXT"):
+            if col.split()[0] not in vcols:
+                self.conn.execute(f"ALTER TABLE plan_versions ADD COLUMN {col}")
+        # Estimated pills left in each cartridge. NULL count = never counted. It is an estimate:
+        # set when the cartridge is filled, lowered by each finished dispense motion.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS cartridge_stock ("
+            " cartridge TEXT PRIMARY KEY,"
+            " count INTEGER,"
+            " filled_at TEXT,"
+            " fill_check_obs INTEGER,"
+            " updated_at TEXT NOT NULL)")
 
     # -- primitives -------------------------------------------------------
     @contextmanager
@@ -374,4 +401,9 @@ class Store:
         return self.q1("SELECT * FROM persons WHERE person_id=?", (person_id,))
 
     def persons(self) -> list[dict]:
-        return self.q("SELECT * FROM persons ORDER BY created_at")
+        """People who use Healthbox now. Handed-over people are archived and never listed."""
+        return self.q("SELECT * FROM persons WHERE archived_at IS NULL ORDER BY created_at")
+
+    def current_person(self) -> dict | None:
+        """The one person this Healthbox is for (the newest, if an older install enrolled several)."""
+        return self.q1("SELECT * FROM persons WHERE archived_at IS NULL ORDER BY created_at DESC LIMIT 1")

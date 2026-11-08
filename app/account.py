@@ -1,12 +1,16 @@
-"""The local account that guards Setup. One account per laptop: a name and a password.
+"""The local account. One account per laptop, for one person: a name and a password.
 
 The password is hashed with scrypt and never leaves the laptop: it is not logged, stored in
-plain text, returned or shown to the assistant. It is needed only for Setup actions
-(SETUP_ROUTES below). Taking a dose, reminders, STOP and the assistant never need it: the
-face check already guards the dose.
+plain text, returned or shown to the assistant.
 
-Unlock state and the wrong-password counter live in memory only, so restarting the server
-locks Setup again. A forgotten password is reset with scripts/reset_account.py, which needs
+Signed in ("unlocked"), everything is available. Signed out, only what is needed to take a due
+dose is: the due dose itself, the dose steps, reminders, follow-ups and STOP (the face check
+guards the dose). Medicines, history, photos, Ask and Setup need the password (SETUP_ROUTES and
+SIGNED_IN_READS below). A forgotten password must never block a needed dose.
+
+Sign-in state and the wrong-password counter live in memory only, so restarting the server
+signs out. SETUP_UNLOCK_MINUTES > 0 signs out after that many minutes without a Setup change;
+0 (the default) keeps you signed in until Sign out. A forgotten password is reset with scripts/reset_account.py, which needs
 physical access to the laptop."""
 from __future__ import annotations
 
@@ -27,9 +31,19 @@ SETUP_ROUTES = frozenset({
     "/api/tray/calibrate", "/api/tray/rename",
     "/api/demo/mode", "/api/demo/trigger", "/api/demo/reset",
 })
-SETUP_PREFIXES = ("/api/labels/",)  # every label POST: capture, extract (upload), read
+SETUP_PREFIXES = ("/api/labels/", "/api/cartridges/")  # every label POST (capture, extract, read); cartridge fills
+# Signed out, these reveal the person's medicines or records, so they need sign-in too.
+SIGNED_IN_POSTS = frozenset({"/api/assistant", "/api/doses/request"})
+SIGNED_IN_READS = ("/api/history", "/api/export/", "/api/setup", "/api/metrics", "/api/evidence/", "/api/labels/")
 
-NAME_MAX = 40
+
+def needs_sign_in(method: str, path: str) -> bool:
+    """Routes that need sign-in apart from Setup changes. Taking a due dose never does."""
+    if method == "POST":
+        return path in SIGNED_IN_POSTS
+    return method == "GET" and path.startswith(SIGNED_IN_READS)
+
+NAME_MAX = 60
 PASSWORD_MIN, PASSWORD_MAX = 8, 128
 MAX_FAILURES = 5
 FAILURE_WINDOW = timedelta(minutes=5)
@@ -77,8 +91,9 @@ class AccountService:
     def __init__(self, store, settings):
         self.store = store
         self.clock = store.clock
-        self.unlock_for = timedelta(minutes=settings.setup_unlock_minutes)
-        self._unlocked_until: datetime | None = None
+        self.unlock_for = timedelta(minutes=settings.setup_unlock_minutes) if settings.setup_unlock_minutes > 0 else None
+        self._signed_in = False
+        self._unlocked_until: datetime | None = None  # None while signed in = until Sign out
         self._locked_out_until: datetime | None = None
         self._failures: list[datetime] = []
         self._lock = asyncio.Lock()  # one password check at a time
@@ -88,8 +103,12 @@ class AccountService:
         row = self.store.q1("SELECT name FROM account WHERE account_id=1")
         return row["name"] if row else None
 
+    def _first(self) -> str | None:
+        row = self.store.q1("SELECT name, first_name FROM account WHERE account_id=1")
+        return (row["first_name"] or row["name"].split()[0]) if row else None
+
     def _unlocked(self, exists: bool, now: datetime) -> bool:
-        return exists and self._unlocked_until is not None and now < self._unlocked_until
+        return exists and self._signed_in and (self._unlocked_until is None or now < self._unlocked_until)
 
     def _lockout(self, now: datetime) -> datetime | None:
         return self._locked_out_until if self._locked_out_until and now < self._locked_out_until else None
@@ -98,14 +117,15 @@ class AccountService:
         name, now = self._name(), self.clock.now()
         unlocked = self._unlocked(name is not None, now)
         lockout = self._lockout(now)
-        return {"exists": name is not None, "name": name, "unlocked": unlocked,
-                "unlocked_until": iso(self._unlocked_until) if unlocked else None,
+        return {"exists": name is not None, "name": name, "first_name": self._first(), "unlocked": unlocked,
+                "unlocked_until": iso(self._unlocked_until) if unlocked and self._unlocked_until else None,
                 "locked_out_until": iso(lockout) if lockout else None}
 
     def brief(self) -> dict:
         """For /api/status (polled every 500 ms): one tiny query."""
         name = self._name()
-        return {"exists": name is not None, "name": name, "unlocked": self._unlocked(name is not None, self.clock.now())}
+        return {"exists": name is not None, "name": name, "first_name": self._first(),
+                "unlocked": self._unlocked(name is not None, self.clock.now())}
 
     def setup_locked(self) -> bool:
         """True when an account exists and Setup is not unlocked. With no account Setup stays open
@@ -113,15 +133,20 @@ class AccountService:
         name = self._name()
         return name is not None and not self._unlocked(True, self.clock.now())
 
+    def signed_out(self) -> bool:
+        """An account exists and nobody is signed in: show only what a due dose needs."""
+        return self.setup_locked()
+
     def touch(self) -> None:
-        """A protected Setup action succeeded: slide the unlock window forward."""
+        """A protected Setup action succeeded: slide the sign-in window forward (when one is set)."""
         now = self.clock.now()
-        if self._unlocked_until is not None and now < self._unlocked_until:
+        if self.unlock_for and self._unlocked_until is not None and now < self._unlocked_until:
             self._unlocked_until = now + self.unlock_for
 
     # -- helpers ----------------------------------------------------------------------
     def _unlock_now(self) -> None:
-        self._unlocked_until = self.clock.now() + self.unlock_for
+        self._signed_in = True
+        self._unlocked_until = self.clock.now() + self.unlock_for if self.unlock_for else None
         self._failures.clear()
 
     def _event(self, kind: str, details: dict | None = None) -> None:
@@ -168,11 +193,19 @@ class AccountService:
             return dict(result)
 
     # -- commands -----------------------------------------------------------------------
-    async def create(self, request_id: str, name: str, password: str) -> dict:
+    async def create(self, request_id: str, name: str, password: str, first_name: str = "", last_name: str = "") -> dict:
         async def fn():
             if self._name() is not None:
                 raise WorkflowError(409, "ACCOUNT_EXISTS")
-            clean = (name or "").strip() if isinstance(name, str) else ""
+            first = first_name.strip() if isinstance(first_name, str) else ""
+            last = last_name.strip() if isinstance(last_name, str) else ""
+            full = name
+            if first or last:
+                if not first or not last:
+                    raise WorkflowError(422, "VALIDATION", "Enter your first and last name.",
+                                        errors=[{"field": "first_name" if not first else "last_name", "message": "Required."}])
+                full = f"{first} {last}"
+            clean = " ".join((full or "").split()) if isinstance(full, str) else ""
             if not 1 <= len(clean) <= NAME_MAX:
                 raise WorkflowError(422, "VALIDATION", f"Your name must be 1 to {NAME_MAX} characters.",
                                     errors=[{"field": "name", "message": f"Use 1 to {NAME_MAX} characters."}])
@@ -182,8 +215,8 @@ class AccountService:
             with self.store.tx() as conn:
                 if conn.execute("SELECT 1 FROM account WHERE account_id=1").fetchone():
                     raise WorkflowError(409, "ACCOUNT_EXISTS")
-                conn.execute("INSERT INTO account (account_id, name, password_hash, created_at, updated_at)"
-                             " VALUES (1,?,?,?,?)", (clean, hashed, now, now))
+                conn.execute("INSERT INTO account (account_id, name, first_name, password_hash, created_at, updated_at)"
+                             " VALUES (1,?,?,?,?,?)", (clean, first or None, hashed, now, now))
                 self.store.event(conn, "ACCOUNT_CREATED", demo=0)
             self._locked_out_until = None
             self._unlock_now()
@@ -204,7 +237,8 @@ class AccountService:
             prev = self.store.get_request(request_id)
             if prev and prev["route"] != "account/lock":
                 raise WorkflowError(409, "REQUEST_ID_REUSED")
-            was = self._unlocked_until is not None and self.clock.now() < self._unlocked_until
+            was = self._unlocked(True, self.clock.now())
+            self._signed_in = False
             self._unlocked_until = None
             if was:
                 self._event("ACCOUNT_LOCKED")
@@ -213,6 +247,34 @@ class AccountService:
                 with self.store.tx() as conn:
                     self.store.save_request(conn, request_id, "account/lock", 200, result)
             return dict(result)
+
+    async def handover(self, request_id: str, password: str, confirm_name: str, emptied: bool, wipe) -> dict:
+        """Give Healthbox to someone else. Needs the password, the current name typed out, and the
+        cartridges emptied (the old medicine must never reach the new person). `wipe(conn, name)` archives
+        the old person inside the same transaction that removes the account; the next visit starts the
+        welcome setup. History stays, labelled with the old name."""
+        async def fn():
+            name = self._name()
+            if name is None:
+                raise WorkflowError(409, "NO_ACCOUNT")
+            if not emptied:
+                raise WorkflowError(422, "VALIDATION", "Empty both cartridges and the tray first, and tick the box.",
+                                    errors=[{"field": "emptied", "message": "Empty both cartridges and the tray first."}])
+            if not isinstance(confirm_name, str) or confirm_name.strip().casefold() != name.casefold():
+                raise WorkflowError(422, "VALIDATION", f"Type {name} exactly to confirm.",
+                                    errors=[{"field": "confirm_name", "message": f"Type {name} to confirm."}])
+            await self._verify(password)
+            with self.store.tx() as conn:
+                after = wipe(conn, name)
+                conn.execute("DELETE FROM account WHERE account_id=1")
+                self.store.event(conn, "ACCOUNT_HANDED_OVER", details={"from": name}, demo=0)
+            self._signed_in = False
+            self._unlocked_until = None
+            self._failures.clear()
+            if after:
+                after()
+            return self.view()
+        return await self._once(request_id, "account/handover", fn)
 
     async def change_password(self, request_id: str, current_password: str, new_password: str) -> dict:
         async def fn():
