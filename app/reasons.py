@@ -35,6 +35,7 @@ MESSAGES: dict[str, str] = {
     "DEVICE_FAULT": "The device reports a fault. Use Device controls for supervised recovery.",
     "DEVICE_RESTARTED": "The controller restarted. The session is new and unarmed.",
     "NOT_ARMED": "The device is not armed. Inspect the enclosure and arm it in Device controls.",
+    "SKIP_NOT_ALLOWED": "This medicine is needed, so it can't be skipped. Take it now, or ask your doctor or pharmacist what to do.",
     "NOT_HOMED": "A rotor's position is not known (it was stopped or faulted mid-motion). Use supervised recovery to rehome.",
     "MOTOR_BUSY": "A motor is still moving.",
     "STOPPED": "STOP was pressed. Inspect the device, then use supervised recovery.",
@@ -60,6 +61,12 @@ MESSAGES: dict[str, str] = {
     "AS_NEEDED_IN_PROGRESS": "A dose of this medicine is already being prepared. Finish or cancel it first.",
     "UNKNOWN_ENTRY": "This medicine is not in the confirmed plan. Refresh and try again.",
     "NOT_AS_NEEDED": "This medicine follows a schedule. Take it when its reminder is due.",
+    # Account (guards Setup only)
+    "SETUP_LOCKED": "Setup is locked. Enter your password to make changes.",
+    "WRONG_PASSWORD": "That password is not right. Try again.",
+    "TOO_MANY_ATTEMPTS": "Too many wrong passwords. Wait a minute, then try again.",
+    "ACCOUNT_EXISTS": "An account already exists on this laptop.",
+    "NO_ACCOUNT": "No account has been made on this laptop yet.",
 }
 
 AS_NEEDED_WAIT = ("TOO_SOON", "DAILY_LIMIT")

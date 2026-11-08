@@ -113,7 +113,8 @@ html[data-contrast="high"] .sky { background: #fff; border-width: 0 0 2px; borde
 .topbar, .sky-scene, .sky-notices { max-width: calc(1320px + 2 * var(--gutter)); margin-inline: auto; }
 .topbar { position: relative; z-index: var(--z-sticky); display: flex; align-items: center; gap: 1.25rem; min-height: 4.4rem; padding: .6rem var(--gutter); flex-wrap: wrap; }
 .brand { display: flex; align-items: center; gap: .6rem; color: inherit; text-decoration: none; font-weight: 700; font-size: var(--fs-lead); }
-.brand-mark { width: 1.6rem; height: 1.6rem; border-radius: 50%; background: radial-gradient(circle at 38% 34%, #fff1c9 0%, var(--sun) 48%, var(--sun-deep) 100%); }
+/* The Healthbox mark is the user's own logo; its colours (including the red clock hand) are exempt from the palette rules. */
+.brand-mark { width: 3.4rem; height: 3.4rem; flex: none; margin: -.5rem 0; padding: .25rem; border-radius: var(--r-control); background: var(--cloud); box-shadow: var(--shadow); }
 .tabs { display: flex; gap: .25rem; flex-wrap: wrap; }
 .tab {
   display: inline-flex; align-items: center; gap: .45rem; min-height: 48px; padding: .55rem 1.05rem;
@@ -177,7 +178,7 @@ html[data-contrast="high"] .sky { background: #fff; border-width: 0 0 2px; borde
 .arc-time { position: absolute; top: calc(100% + .35rem); white-space: nowrap; font-size: var(--fs-small); font-weight: 700; color: var(--sky-ink); font-variant-numeric: tabular-nums; }
 .arc-point.due .arc-time { font-size: var(--fs-body); }
 .sun { position: absolute; width: 3.4rem; height: 3.4rem; border-radius: 50%; transform: translate(-50%, -50%); background: radial-gradient(circle at 38% 34%, #fff1c9 0%, var(--sun) 48%, var(--sun-deep) 100%); outline: .7rem solid color-mix(in srgb, var(--sun) 35%, transparent); outline-offset: 0; transition: left 1s var(--ease), top 1s var(--ease); }
-html[data-sky="night"] .sun { background: #eef3fa; box-shadow: inset -.7rem -.3rem 0 var(--line-2); outline-color: rgba(238, 243, 250, .18); }
+.sun.moon, html[data-sky="night"] .sun { background: #eef3fa; box-shadow: inset -.7rem -.3rem 0 var(--line-2); outline-color: rgba(238, 243, 250, .18); }
 html[data-contrast="high"] .sun { background: var(--cloud); border: 3px solid var(--ink); outline: 0; }
 
 /* ------------------------------------------------------------------ layout */
@@ -458,6 +459,8 @@ body.simple .setup-door, body.simple .status-line .notice:not(.alert) { display:
   .brand { grid-area: brand; } .topbar-actions { grid-area: display; } .btn-stop { grid-area: stop; margin-left: .25rem; padding: .5rem 1.1rem; }
   .tabs { grid-area: tabs; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin-inline: -.25rem; }
   .spacer { display: none; }
+  .brand-mark { width: 2.9rem; height: 2.9rem; margin: -.3rem 0; }
+  .brand { gap: .45rem; }
   .sky-notices { flex-wrap: wrap; }
   .sky-notices .status-line { display: contents; }
   .notice.calm { padding: .45rem .6rem; }
@@ -493,3 +496,29 @@ body.simple .setup-door, body.simple .status-line .notice:not(.alert) { display:
 .swatch-gap { width: 1.15rem; height: 1.15rem; }
 html[data-contrast="high"] .btn-quiet { text-decoration: underline; text-underline-offset: .25em; }
 .stats-wide { grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }
+@media (max-width: 400px) {
+  /* Very narrow phones: STOP must stay fully on screen. */
+  .brand-mark { width: 2.5rem; height: 2.5rem; padding: .18rem; }
+  .brand-name { font-size: var(--fs-body); }
+  .btn-stop { padding: .5rem .85rem; gap: .35rem; }
+  .top-btn { padding: .5rem .55rem; }
+}
+.arc-next { position: absolute; transform: translate(calc(-100% - .6rem), -50%); display: inline-flex; align-items: center; gap: .35rem;
+  padding: .3rem .7rem; border-radius: 999px; background: var(--sky-tab); color: var(--ink); font-size: var(--fs-small); font-weight: 700; white-space: nowrap; }
+.arc-next .ph { font-size: var(--icon); }
+.arc.night .arc-point.wait .arc-dot { background: transparent; }
+
+/* ------------------------------------------------------------------ account: welcome, lock */
+.welcome { max-width: 46rem; margin: 0 auto; display: grid; gap: 1.5rem; }
+.welcome-head { display: flex; gap: 1.25rem; align-items: center; }
+.welcome-mark { width: 5.5rem; height: 5.5rem; flex: none; padding: .35rem; border-radius: var(--r-panel); background: var(--cloud); box-shadow: var(--shadow); }
+.welcome-head .lede { color: var(--ink-2); font-size: var(--fs-lead); margin-top: .35rem; }
+.welcome-form { display: grid; gap: 1.1rem; }
+.onboard-track { margin-bottom: 0; }
+.panel.onboard { margin-bottom: 1.25rem; display: grid; gap: 1rem; }
+.panel.onboard .lede { color: var(--ink-2); font-size: var(--fs-lead); }
+.unlock { max-width: 34rem; display: grid; gap: 1.25rem; }
+.unlock-form { display: grid; gap: .9rem; max-width: 24rem; }
+.time-chip.suggested { background: var(--cloud); outline: 2px dashed var(--focus); outline-offset: -2px; }
+#door-lock { font-size: var(--fs-body); }
+@media (max-width: 760px) { .welcome-head { flex-direction: column; align-items: flex-start; } }

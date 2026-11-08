@@ -252,6 +252,16 @@ class Store:
             # When the command was actually written to the controller (reservation can be earlier,
             # e.g. cartridge B waits for A's motion). Older rows stay NULL.
             self.conn.execute("ALTER TABLE commands ADD COLUMN sent_at TEXT")
+        # The local account that guards Setup (one per laptop). Older databases simply gain the
+        # empty table, so Setup stays open until an account is made. password_hash holds
+        # 'scrypt$n$r$p$salt$hash'; the password itself is never stored.
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS account ("
+            " account_id INTEGER PRIMARY KEY CHECK (account_id = 1),"
+            " name TEXT NOT NULL,"
+            " password_hash TEXT NOT NULL,"
+            " created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL)")
 
     # -- primitives -------------------------------------------------------
     @contextmanager

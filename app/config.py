@@ -86,6 +86,9 @@ class Settings:
     max_upload_bytes: int = 4_000_000
     max_question_chars: int = 500
 
+    # Account: how long Setup stays unlocked after the last Setup action (sliding)
+    setup_unlock_minutes: int = 15
+
     @classmethod
     def from_env(cls, **overrides) -> "Settings":
         _load_dotenv()
@@ -117,6 +120,7 @@ class Settings:
             google_cloud_location=_str("GOOGLE_CLOUD_LOCATION", "us-central1"),
             ai_request_limit=_int("AI_REQUEST_LIMIT", 100),
             require_label_photo=_str("REQUIRE_LABEL_PHOTO", "1") not in ("0", "false", "no"),
+            setup_unlock_minutes=_int("SETUP_UNLOCK_MINUTES", 15),
         )
         return replace(s, **overrides) if overrides else s
 
@@ -132,6 +136,8 @@ class Settings:
             problems.append("TRAY_CAMERA_URL is required when CAMERA_MODE=dual_camera")
         if self.genai_backend not in ("off", "developer_api", "google_cloud"):
             problems.append("GENAI_BACKEND must be off, developer_api or google_cloud")
+        if not 1 <= self.setup_unlock_minutes <= 1440:
+            problems.append("SETUP_UNLOCK_MINUTES must be between 1 and 1440")
         if self.host not in ("127.0.0.1", "localhost", "::1"):
             problems.append("HOST must be a loopback address; the command API is local only")
         return problems

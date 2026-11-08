@@ -112,6 +112,7 @@ def build_status(services) -> dict:
                            "shape": c["hsv"].get("shape")} for c in store.token_classes()],
         "vision": services.vision.status(),
         "ai": services.ai.status(),
+        "account": services.account.brief(),  # exists, name, unlocked only
         "config": {"hardware_mode": s.hardware_mode, "camera_mode": s.camera_mode,
                    "snooze_minutes": s.snooze_minutes, "sound_max": s.sound_max, "needs_review_minutes": s.needs_review_minutes},
     }
@@ -188,6 +189,7 @@ def recent_events(services, limit: int = 8) -> list[dict]:
     store = services.store
     tz = tz_for(services)
     rows = store.q("SELECT event_id, ts, kind, reason_code FROM events WHERE demo=? AND kind NOT IN ('OBSERVATION','OCCURRENCE_CREATED')"
+                   " AND kind NOT LIKE 'ACCOUNT\\_%' ESCAPE '\\'"
                    " ORDER BY event_id DESC LIMIT ?", (store.demo, limit))
     for r in rows:
         r["ts_local"] = fmt_local(parse(r["ts"]), tz)

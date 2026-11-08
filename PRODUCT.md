@@ -28,11 +28,12 @@ The dose is physically guarded: face check, empty-tray check, counted dose check
 
 Everyday: Today (due doses, remind me later, silence, I took it for reminder-only, as-needed medicines with when they are next allowed), Dose steps (six guarded steps), Ask (read-only assistant), Display (language EN/ES/ZH, text size, high contrast, simple view), read aloud.
 Setup (one door, used rarely): My medicines (confirmed plan, scheduled and as-needed), Set up (face enrollment, label photos with multi-angle bottle capture, entries, timezone), History (per-dose timeline, CSV), Dispenser (status, arm, supervised recovery, pill-type calibration, simulator, developer info).
+Account: one local account per laptop (name and password, hashed, never leaves the laptop). The password guards Setup changes only and stays unlocked for 15 minutes after the last change; taking a dose, reminders, STOP and Ask never need it. A forgotten password is reset on the laptop with `scripts/reset_account.py` (medicines and history are kept). Label directions can pre-fill suggested times; the person still confirms each entry.
 Constraints: vanilla HTML/CSS/JS, no build step; every rule is enforced on the server; STOP is always visible.
 
 ## Brand Commitments
 
-Name: DoseGuard. Personality: calm, kind, trustworthy. The user asked for a light blue and white theme with a little red; red is reserved for real alerts and STOP. Voice: plain, short sentences, never technical on everyday screens.
+Name: Healthbox (the product was called DoseGuard; code, repo and file names keep `doseguard`). Logo: the user's orbit-clock pill mark, static/brand/healthbox-mark.png. Personality: calm, kind, trustworthy. The user asked for a light blue and white theme with a little red; red is reserved for real alerts and STOP. Voice: plain, short sentences, never technical on everyday screens.
 
 ## Evidence on Hand
 

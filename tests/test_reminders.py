@@ -229,3 +229,12 @@ def test_quantity_limit_per_channel_at_same_time(env):
     with pytest.raises(WorkflowError) as ex:
         confirm(store, rem, [entry(key="a", qty=2), entry(key="b", qty=2)])
     assert ex.value.status == 422
+
+
+def test_a_needed_dose_cannot_be_skipped(harness):
+    h = harness()
+    card = h.demo_due()
+    r = h.post("/api/reminders/close", {"request_id": rid(), "reminder_id": card["reminder"]["reminder_id"]}, expect=409)
+    assert r["reason_codes"] == ["SKIP_NOT_ALLOWED"]
+    c = next(x for x in h.status()["today"] if x["dose_id"] == card["dose_id"])
+    assert c["reminder"]["state"] == "DUE" and c["workflow_state"] == "NOT_STARTED"

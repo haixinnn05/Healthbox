@@ -143,6 +143,10 @@ components:
 
 # Design System: DoseGuard
 
+> **Brand mark.** The product is now **Healthbox**. Its logo (`static/brand/healthbox-mark.png`, cut from the user's
+> own artwork) sits in the top bar on a cloud-white tile (3.4rem, 14px corners, soft shadow) beside the name. The mark keeps its own colours, including the red
+> clock hand; that red is part of the logo and is exempt from "red only for STOP and real alerts".
+
 ## Overview
 
 **Creative North Star: "Morning Sky"**

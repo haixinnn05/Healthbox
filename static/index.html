@@ -6,7 +6,9 @@
   <meta name="dg-token" content="__DOSEGUARD_TOKEN__">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#9ccbf0">
-  <title>DoseGuard</title>
+  <link rel="icon" type="image/png" sizes="64x64" href="/static/brand/favicon-64.png">
+  <link rel="apple-touch-icon" href="/static/brand/apple-touch-icon.png">
+  <title>Healthbox</title>
   <link rel="preload" href="/static/vendor/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="preload" href="/static/vendor/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="/static/vendor/phosphor/style.css">
@@ -20,7 +22,7 @@
       if (p.contrast) r.dataset.contrast = "high";
       if (p.lang) r.lang = p.lang === "zh" ? "zh-CN" : p.lang;
       const hr = new Date().getHours();
-      r.dataset.sky = hr < 5 || hr >= 21 ? "night" : hr < 9 ? "dawn" : hr < 17 ? "day" : "dusk";
+      r.dataset.sky = hr < 6 || hr >= 20 ? "night" : hr < 9 ? "dawn" : hr < 17 ? "day" : "dusk";
     } catch (e) {}
   </script>
 </head>
@@ -29,15 +31,15 @@
 
   <div class="sky" id="sky">
     <header class="topbar">
-      <a class="brand" href="#today" aria-label="DoseGuard, Today">
-        <span class="brand-mark" aria-hidden="true"></span>
-        <span class="brand-name">DoseGuard</span>
+      <a class="brand" href="#today" aria-label="Healthbox, Today">
+        <img class="brand-mark" src="/static/brand/healthbox-mark.png" alt="" width="40" height="40">
+        <span class="brand-name">Healthbox</span>
       </a>
       <nav class="tabs" aria-label="Main">
         <a class="tab" href="#today" data-view="today"><span data-i18n="nav.today">Today</span><span class="count" id="nav-due" hidden></span></a>
         <a class="tab" href="#verify" data-view="verify" id="tab-verify"><span data-i18n="nav.verify">Dose steps</span><span class="live" id="nav-verify" hidden aria-hidden="true"></span></a>
         <button class="tab" type="button" id="assistant-toggle" aria-expanded="false" aria-controls="assistant"><span data-i18n="top.ask">Ask</span></button>
-        <a class="tab setup-door" id="care-link" href="#schedules"><span data-i18n="top.caregiver">Setup</span></a>
+        <a class="tab setup-door" id="care-link" href="#schedules"><i class="ph ph-lock-simple" id="door-lock" hidden aria-hidden="true"></i><span data-i18n="top.caregiver">Setup</span></a>
       </nav>
       <span class="spacer"></span>
       <div class="topbar-actions">
@@ -62,7 +64,7 @@
   <aside id="assistant" class="assistant" aria-labelledby="assistant-title" hidden>
     <div class="assistant-head">
       <div>
-        <h2 id="assistant-title" data-i18n="ask.title">Ask DoseGuard</h2>
+        <h2 id="assistant-title" data-i18n="ask.title">Ask Healthbox</h2>
         <p class="assistant-sub" data-i18n="ask.sub">It explains what the app knows. It can't take any action.</p>
       </div>
       <button class="icon-btn" id="assistant-close" data-i18n-aria="prefs.close" aria-label="Close"><i class="ph ph-x" aria-hidden="true"></i></button>

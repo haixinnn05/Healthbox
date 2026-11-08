@@ -14,19 +14,24 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import HTMLResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from .account import AccountService, is_setup_route
 from .ai import AIError, AIService
 from .camera import CaptureManager
 from .config import ROOT, Settings
 from .context import authoritative_explanation, build_facts, local_answer, select_help
 from .errors import WorkflowError
 from .hardware import HardwareAdapter, make_adapter
+from .labels import suggest_schedule
 from . import telemetry
 from .plans import confirm_plan
+from .reasons import message
 from .reminders import ReminderService
 from .status import build_status, dose_detail, history, recent_events
 from .store import Store, dumps
@@ -49,6 +54,7 @@ class Services:
     engine: WorkflowEngine
     ai: AIService
     token: str
+    account: AccountService
 
 
 # ---------------------------------------------------------------- request models
@@ -94,6 +100,22 @@ class PlanConfirm(Cmd):
     timezone_confirmed: bool = False
     dst_reviewed: bool = False
     entries: list[dict] = Field(max_length=12)
+
+
+# Account fields are plain strings checked in app/account.py, so a validation error can never echo
+# a password back (FastAPI's default 422 body includes the input).
+class AccountCreate(Cmd):
+    name: str = ""
+    password: str = ""
+
+
+class AccountUnlock(Cmd):
+    password: str = ""
+
+
+class AccountPassword(Cmd):
+    current_password: str = ""
+    new_password: str = ""
 
 
 class Ask(Cmd):
@@ -171,7 +193,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         reminders = ReminderService(store, settings)
         engine = WorkflowEngine(store, reminders, hardware, vision, settings)
         ai = AIService(settings)
-        svc = Services(settings, store, hardware, camera, vision, reminders, engine, ai, secrets.token_urlsafe(24))
+        svc = Services(settings, store, hardware, camera, vision, reminders, engine, ai, secrets.token_urlsafe(24),
+                       AccountService(store, settings))  # in memory: a restart locks Setup
         app.state.svc = svc
         await hardware.start()
         await camera.start()
@@ -194,8 +217,14 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=hosts)
     allowed_origins = {f"http://{h}:{settings.port}" for h in ("127.0.0.1", "localhost", "[::1]")}
 
+    def harden(resp: Response) -> Response:
+        resp.headers["X-Content-Type-Options"] = "nosniff"
+        resp.headers["Cache-Control"] = "no-store"
+        return resp
+
     @app.middleware("http")
     async def guard_commands(request: Request, call_next):
+        setup = False
         if request.method == "POST":
             svc: Services = request.app.state.svc
             origin = request.headers.get("origin")
@@ -204,10 +233,22 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
             if not secrets.compare_digest(request.headers.get("x-doseguard-token", ""), svc.token):
                 return JSONResponse({"result": "rejected", "reason_codes": ["BAD_TOKEN"],
                                      "message": "Missing or wrong session token. Reload the page."}, 403)
+            # The one place Setup is guarded (list in app/account.py). Checked before the body is read.
+            setup = is_setup_route(request.method, request.scope["path"])
+            if setup and svc.account.setup_locked():
+                return harden(JSONResponse({"request_id": None, "state_version": svc.store.version, "result": "rejected",
+                                            "reason_codes": ["SETUP_LOCKED"], "message": message("SETUP_LOCKED")}, 423))
         resp = await call_next(request)
-        resp.headers["X-Content-Type-Options"] = "nosniff"
-        resp.headers["Cache-Control"] = "no-store"
-        return resp
+        if setup and resp.status_code < 400:
+            request.app.state.svc.account.touch()  # sliding unlock window
+        return harden(resp)
+
+    @app.exception_handler(RequestValidationError)
+    async def validation_error(request: Request, exc: RequestValidationError):
+        if request.scope["path"].startswith("/api/account"):
+            # Never echo the submitted body: it holds a password.
+            return JSONResponse({"detail": [{k: e.get(k) for k in ("loc", "msg", "type")} for e in exc.errors()]}, 422)
+        return await request_validation_exception_handler(request, exc)
 
     @app.exception_handler(WorkflowError)
     async def workflow_error(request: Request, exc: WorkflowError):
@@ -320,6 +361,28 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
         return Response(buf.getvalue(), media_type="text/csv",
                         headers={"Content-Disposition": "attachment; filename=doseguard-metrics.csv"})
 
+    # ------------------------------------------------------------ account (guards Setup only)
+    @app.get("/api/account")
+    async def get_account(request: Request):
+        return S(request).account.view()
+
+    @app.post("/api/account/create")
+    async def account_create(request: Request, body: AccountCreate):
+        return ok(request, body.request_id, await S(request).account.create(body.request_id, body.name, body.password))
+
+    @app.post("/api/account/unlock")
+    async def account_unlock(request: Request, body: AccountUnlock):
+        return ok(request, body.request_id, await S(request).account.unlock(body.request_id, body.password))
+
+    @app.post("/api/account/lock")
+    async def account_lock(request: Request, body: Cmd):
+        return ok(request, body.request_id, await S(request).account.lock(body.request_id))
+
+    @app.post("/api/account/password")
+    async def account_password(request: Request, body: AccountPassword):
+        return ok(request, body.request_id, await S(request).account.change_password(
+            body.request_id, body.current_password, body.new_password))
+
     # ------------------------------------------------------------ reminders
     @app.post("/api/reminders/snooze")
     async def snooze(request: Request, body: ReminderCmd):
@@ -331,7 +394,9 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
 
     @app.post("/api/reminders/close")
     async def close(request: Request, body: ReminderCmd):
-        return ok(request, body.request_id, S(request).reminders.close_reviewed(body.request_id, body.reminder_id))
+        # Needed medicine cannot be skipped. A missed dose stays on Today until it is taken; it is never
+        # doubled or dispensed automatically. Older records closed as skipped stay readable in History.
+        raise WorkflowError(409, "SKIP_NOT_ALLOWED")
 
     @app.post("/api/doses/self-report")
     async def self_report(request: Request, body: DoseCmd):
@@ -435,7 +500,8 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
             svc.store.event(conn, "LABEL_PHOTO", details={"label_id": new_id, "photo": n + 1, "source": source})
             result = ok(request, request_id, {
                 "label_id": new_id, "photos": n + 1, "max_photos": MAX_LABEL_PHOTOS,
-                "image_urls": [f"/api/labels/{new_id}/image?i={i}" for i in range(n + 1)]})
+                "image_urls": [f"/api/labels/{new_id}/image?i={i}" for i in range(n + 1)],
+                "suggested_schedule": None})  # fields (and so a suggestion) come from /api/labels/read
             svc.store.save_request(conn, request_id, "labels", 200, result)
         return result
 
@@ -500,7 +566,10 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
                          (dumps(fields) if fields else None, ai_status, body.label_id))
             svc.store.event(conn, "LABEL_READ", details={"label_id": body.label_id, "photos": len(imgs),
                                                          "container": body.container, "ai": ai_status, "requires_review": True})
+            # Label text is parsed as data by fixed rules; it only pre-fills times the person still confirms.
+            suggested = suggest_schedule(fields.get("frequency_text"), fields.get("units_per_dose")) if fields else None
             result = ok(request, body.request_id, {"label_id": body.label_id, "photos": len(imgs), "fields": fields,
+                                                   "suggested_schedule": suggested,
                                                    "ai_status": ai_status, "note": note, "confirmed": False})
             svc.store.save_request(conn, body.request_id, "labels/read", 200, result)
         return result
@@ -536,6 +605,7 @@ def create_app(settings: Settings | None = None, clock: Clock | None = None, tes
     async def assistant(request: Request, body: Ask):
         svc = S(request)
         snap = build_status(svc)
+        snap.pop("account", None)  # the assistant never sees account data
         facts = build_facts(snap, recent_events(svc))
         snippets = select_help(body.question)
         auth = authoritative_explanation(snap)

@@ -7,14 +7,14 @@ import re
 
 HELP: list[dict] = [
     {"id": "H-due", "title": "Due reminders", "keywords": "due next reminder alert when time today schedule",
-     "text": "At the scheduled time DoseGuard shows a due card and plays a sound every 60 seconds, up to three times. "
+     "text": "At the scheduled time Healthbox shows a due card and plays a sound every 60 seconds, up to three times. "
              "After 15 minutes without a response the card is marked Needs review. Reminders never move the dispenser."},
     {"id": "H-snooze", "title": "Snooze and dismiss", "keywords": "snooze dismiss acknowledge silence later return came back again",
      "text": "Snooze delays the alert by five minutes, then it returns as due. Dismiss reminder only acknowledges the notification. "
              "Neither one means the dose was taken or collected."},
     {"id": "H-review", "title": "Needs review", "keywords": "needs review late missed overdue",
      "text": "A reminder becomes Needs review after 15 minutes without a response, or if the app was off at the due time. "
-             "DoseGuard never combines missed quantities or dispenses a catch-up dose automatically."},
+             "Healthbox never combines missed quantities or dispenses a catch-up dose automatically."},
     {"id": "H-verify", "title": "Verification steps", "keywords": "start verification steps how dispense release process",
      "text": "Start verification runs: recipient check, empty tray check, dispensing, dose check, then recipient recheck and release. "
              "Each step needs fresh camera evidence. The tray unlocks only after every check passes."},
@@ -34,13 +34,13 @@ HELP: list[dict] = [
      "text": "Before dispensing, a supervisor inspects the enclosure and arms the device in Device controls. Arming is lost after a "
              "restart, a disconnect, STOP or a fault."},
     {"id": "H-taking", "title": "Collection and taking", "keywords": "taken swallow ingest collected took confirm",
-     "text": "DoseGuard can observe that the tray was emptied and record your own confirmation. It cannot verify swallowing. "
+     "text": "Healthbox can observe that the tray was emptied and record your own confirmation. It cannot verify swallowing. "
              "Collection observed and User reported taken are separate records."},
     {"id": "H-reminder-only", "title": "Reminder-only entries", "keywords": "reminder only separate stored mark taken self report",
      "text": "Reminder-only entries are stored outside the dispenser. Mark taken records an unverified self report and never "
              "counts as a camera check."},
     {"id": "H-as-needed", "title": "As-needed medicine", "keywords": "as needed prn headache pain when can take extra limit hours another",
-     "text": "As-needed medicine has no schedule. You ask for a dose when you need it. DoseGuard allows it only when enough hours "
+     "text": "As-needed medicine has no schedule. You ask for a dose when you need it. Healthbox allows it only when enough hours "
              "have passed since the last dose and the 24 hour maximum is not reached. A dispenser dose still runs every "
              "verification step. The limits come from the confirmed plan; ask your clinician before changing them."},
     {"id": "H-label", "title": "Label scan", "keywords": "label scan photo extract gemini fields",
@@ -117,7 +117,7 @@ def build_facts(snap: dict, recent_events: list[dict]) -> list[dict]:
         + (", armed" if (snap.get("workflow") or {}).get("armed") else ", not armed")
         + (f", fault {dev['fault']}" if dev.get("fault") else "")
         + (" (simulator)" if dev.get("simulated") else "") + ".")
-    for e in recent_events[:6]:
+    for e in [e for e in recent_events if not e["kind"].startswith("ACCOUNT_")][:6]:  # account activity stays out
         add(f"F-ev-{e['event_id']}", f"{e['ts_local']}: {e['kind'].replace('_', ' ').lower()}"
             + (f" ({e['reason_code']})" if e.get("reason_code") else "") + ".")
     return facts

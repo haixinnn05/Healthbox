@@ -1,4 +1,4 @@
-# DoseGuard
+# Healthbox (DoseGuard)
 
 Local smart pillbox app for MakeCU 2026. It confirms fictional medication schedules, reminds when a dose is due,
 then guides the enrolled recipient through a guarded workflow:
@@ -34,6 +34,34 @@ DoseGuard is for one person. **Today** is the everyday screen; everything you do
 
 Or use **Demo mode** (Setup → Dispenser → Developer and demo mode), then **Remind A + B in 30 s** in the Demo panel.
 Demo mode also adds a fictional as-needed "Headache relief".
+
+### Your account (protects Setup)
+On first run the page asks for a name and a password (8 to 128 characters). It stays on this laptop: the password
+is hashed with scrypt, never logged, never sent anywhere and never shown to the assistant. The password is needed
+**only for Setup**: changing medicines, face enrollment, label photos, arming and recovering the dispenser, pill
+calibration and demo controls. Taking a dose, reminders, STOP and the assistant never ask for it; the face check
+already guards the dose.
+
+- Setup stays unlocked for 15 minutes after the last Setup change (`SETUP_UNLOCK_MINUTES`). **Lock** locks it
+  at once, and restarting the server always locks it.
+- Five wrong passwords within five minutes pause password attempts for one minute.
+- **Forgot the password?** With the laptop in front of you, run
+  `.venv/bin/python scripts/reset_account.py` and type `RESET`. It removes only the account (name and password);
+  medicines, faces, label photos and history are kept. Open the page and make a new account.
+
+API: `GET /api/account` returns `{exists, name, unlocked, unlocked_until, locked_out_until}`, and
+`POST /api/account/create {request_id, name, password}`, `/unlock {request_id, password}`, `/lock {request_id}`,
+`/password {request_id, current_password, new_password}` return the same fields. A wrong password is 401
+`WRONG_PASSWORD` with `attempts_left`, a pause is 429 `TOO_MANY_ATTEMPTS` with `locked_out_until`, and a Setup
+route while locked is 423 `SETUP_LOCKED`. A replayed `request_id` never runs again and returns the current state
+(`replayed: true`). `GET /api/status` includes `account: {exists, name, unlocked}`. With no account, Setup is open
+(the page asks for one first). The guarded routes are listed in `app/account.py` (`SETUP_ROUTES`).
+
+### Suggested times from the label
+When a label is read, `POST /api/labels/read` also returns `suggested_schedule`, worked out from the label's
+directions by fixed rules (no AI), e.g. "twice daily" → 08:00 and 20:00, "at bedtime" → 21:00, "every 4 to 6 hours
+as needed, no more than 4 a day" → as needed, 6 hours apart, at most 4 in 24 hours. Anything unclear gives `null`.
+It only pre-fills the form: every entry is still confirmed by the person.
 
 ### Simulating failures
 Setup → Dispenser → Hardware simulator: double feed, empty feed, wrong pill type, motor stall, lost completion, lost
@@ -83,6 +111,7 @@ Copy `.env.example` to `.env`. Main switches:
 | `TRAY_CAMERA_URL` | ESP32-CAM snapshot URL (dual_camera) |
 | `GENAI_BACKEND` | `off`, `developer_api` (AI Studio key), `google_cloud` |
 | `GEMINI_MODEL`, `GEMINI_API_KEY` | check the model ID in AI Studio first |
+| `SETUP_UNLOCK_MINUTES` | how long Setup stays unlocked after the last Setup change (default 15) |
 
 ### Real camera
 ```bash
@@ -144,6 +173,10 @@ completion, combined A+B, and the assistant having no write path.
 `tests/test_as_needed.py` covers as-needed entries: validation, the guarded workflow on request, duplicate
 request IDs, too soon, the rolling 24 h limit, cancel-before-dispense not counting, uncertain outcomes counting,
 reminder-only never touching hardware, stale plans, scheduled behaviour unchanged, and the old-database migration.
+`tests/test_account.py` covers the account: create, unlock, lock, wrong passwords and the pause, password change,
+every Setup route locked and unlocked, everyday actions never needing the password, sliding expiry, restart locking,
+replays, the reset script, and the password and hash never appearing in responses, events or exports.
+`tests/test_label_schedule.py` covers the label-directions parser, including unclear text giving no suggestion.
 
 ### As-needed medicine
 A plan entry is `"schedule": "SCHEDULED"` (default, recurring times) or `"AS_NEEDED"` (no times, plus
@@ -166,13 +199,15 @@ app/vision.py      face (YuNet/SFace) and tray (ArUco + colour contours) observa
 app/store.py       SQLite schema, the authoritative record
 app/plans.py       plan validation and versioned confirmation
 app/as_needed.py   as-needed limits (minimum interval, rolling 24 h maximum); reading only
+app/account.py     local account: scrypt password, Setup unlock (in memory), wrong-password pause, guarded routes
+app/labels.py      label directions to suggested times (fixed rules, no AI)
 app/ai.py          Gemini adapter (label extraction, assistant). No hardware or plan writes
 app/context.py     approved help, redacted facts, offline answers
 app/status.py      the snapshot the page polls every 500 ms
 app/telemetry.py   read-only metrics: reminder delivery delay, dispense cycle duration
 app/virtual_controller.py  simulated controller on a virtual serial port (tests, rehearsal)
 scripts/           bench_check.py (controller conformance + feed trials), tray_cam_check.py (ESP32-CAM),
-                   virtual_controller.py, models, markers
+                   virtual_controller.py, reset_account.py (forgotten password), models, markers
 firmware/          controller sketch (ESP32) and tray camera sketch (ESP32-CAM)
 static/            the page
 docs/              protocol for the firmware, tray markers

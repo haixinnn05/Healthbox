@@ -141,9 +141,24 @@ function go(view) {
 /* ---------------------------------------------------------------- time and words */
 function locale() { return LANGS[PREFS.lang].locale; }
 function tz() { return (S.status && S.status.timezone) || undefined; }
+const LAPTOP_TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || null; } catch { return null; } })();
+function zoneOffset(zone) {
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: zone, timeZoneName: "shortOffset" }).formatToParts(new Date())
+      .find((p) => p.type === "timeZoneName").value;
+  } catch { return null; }
+}
+// True when the plan's clock and this laptop's clock disagree right now (e.g. a Chicago plan on a New York laptop).
+function tzDiffers(zone = tz()) {
+  return !!(zone && LAPTOP_TZ && zoneOffset(zone) !== zoneOffset(LAPTOP_TZ));
+}
+const zoneCity = (zone) => (zone || "").split("/").pop().replace(/_/g, " ");
 function fmtClock(iso) {
   if (!iso) return "";
-  return new Intl.DateTimeFormat(locale(), { hour: "numeric", minute: "2-digit", timeZone: tz() }).format(new Date(iso));
+  // Name the zone whenever it is not the laptop's own, so "4:05 PM" can never be misread.
+  const opts = { hour: "numeric", minute: "2-digit", timeZone: tz() };
+  if (tzDiffers()) opts.timeZoneName = "short";
+  return new Intl.DateTimeFormat(locale(), opts).format(new Date(iso));
 }
 function fmtWhen(iso) {
   // "2:15 PM" today, "Tomorrow 9:00 AM" otherwise, in the user's language.
@@ -161,7 +176,7 @@ function hourOf(date) {
   const get = (k) => Number((parts.find((p) => p.type === k) || {}).value || 0);
   return (get("hour") % 24) + get("minute") / 60;
 }
-function skyPhase(hr) { return hr < 5 || hr >= 21 ? "night" : hr < 9 ? "dawn" : hr < 17 ? "day" : "dusk"; }
+function skyPhase(hr) { return hr < 6 || hr >= 20 ? "night" : hr < 9 ? "dawn" : hr < 17 ? "day" : "dusk"; }
 function dayWord(c) {
   if (!c.due_day || c.due_day === "Today") return "";
   return hasKey(`day.${c.due_day}`) ? t(`day.${c.due_day}`) : new Intl.DateTimeFormat(locale(), { weekday: "short", month: "short", day: "numeric", timeZone: tz() }).format(new Date(c.due_at_utc));
@@ -356,7 +371,7 @@ function rerender(force = false) {
   if (!s) return;
   document.documentElement.dataset.sky = skyPhase(hourOf(new Date()));
   renderChips();
-  document.title = s.due_count ? `(${s.due_count}) ${t("due.now")} - DoseGuard` : "DoseGuard";
+  document.title = s.due_count ? `(${s.due_count}) ${t("due.now")} - Healthbox` : "Healthbox";
   $("#demo-badge").hidden = !s.demo_mode;
   const waiting = s.today.filter((c) => ["DUE", "NEEDS_REVIEW"].includes(c.reminder.state) && c.workflow_state === "NOT_STARTED");
   const due = $("#nav-due");
@@ -365,9 +380,20 @@ function rerender(force = false) {
   due.classList.toggle("missed", waiting.some((c) => c.reminder.state === "NEEDS_REVIEW"));
   $("#nav-verify").hidden = !(s.workflow && s.workflow.txn);
   $("#tab-verify").hidden = !(s.workflow && s.workflow.txn) && S.view !== "verify";
+  const acct = s.account || null;
+  const lockIc = $("#door-lock");
+  if (lockIc) lockIc.hidden = !(acct && acct.exists && !acct.unlocked);
+  if (needsWelcome(s)) {
+    if (!S.keys.__welcome) { S.keys = { __welcome: 1 }; renderWelcome(); }
+    return;
+  }
+  if (S.keys.__welcome) { S.keys = {}; route(); return; }
+  const unlocked = !!(acct && acct.unlocked);
+  if (S.lastUnlocked !== undefined && S.lastUnlocked !== unlocked && DOOR_VIEWS.includes(S.view)) { S.lastUnlocked = unlocked; route(); return; }
+  S.lastUnlocked = unlocked;
   const fn = VIEWS[S.view];
   if (!fn || !fn.key) return;
-  const key = JSON.stringify([fn.key(s), S.busy, PREFS.lang, PREFS.simple]);
+  const key = JSON.stringify([fn.key(s), S.busy, PREFS.lang, PREFS.simple, acct && acct.exists, unlocked]);
   if (!force && S.keys[S.view] === key) {
     if (fn.tick) fn.tick(s);
     return;
@@ -404,6 +430,7 @@ function renderChips() {
   const pose = tx && tx.pose ? t("chip.cam_pose", { pose: tx.pose === "FACE" ? t("camera.face") : t("camera.tray") }) : null;
   if (!cam.simulated && cam.face && cam.face.error) items.push([true, "camera-slash", t("chip.cam_bad")]);
   else items.push([false, tx && tx.pose === "TRAY" ? "squares-four" : "camera", pose || (cam.simulated ? t("chip.cam_sim") : t("chip.cam_ok")), null, !pose]);
+  if (tzDiffers()) items.push([false, "globe-hemisphere-west", t("chip.tz", { tz: zoneCity(tz()) }), PREFS.simple ? null : "#schedules"]);
   for (const [alert, ic, text, link, calm] of items) {
     if (PREFS.simple && calm) continue;
     box.append(notice(alert, ic, text, link, !!calm));
@@ -456,85 +483,107 @@ function refreshAll() {
 }
 
 /* ---------------------------------------------------------------- the sky (Today only) */
-const ARC = { cx: 500, cy: 285, rx: 470, ry: 255, from: 5, to: 24 }; // a 1000 x 300 box; 5 AM to midnight
-function arcPoint(hr) {
-  const f = Math.min(1, Math.max(0, (hr - ARC.from) / (ARC.to - ARC.from)));
+const ARC = { cx: 500, cy: 285, rx: 470, ry: 255 }; // a 1000 x 300 box
+// The arc is one half of the day. Day: the sun crosses 6 AM to 8 PM. Night: the moon crosses 8 PM to 6 AM,
+// then the sun comes round again. Hours here count from today's midnight in the plan's timezone, so 26 is 2 AM tomorrow.
+function skyWindow(nowHr) {
+  if (nowHr >= 6 && nowHr < 20) return { night: false, from: 6, to: 20, ticks: [[6, "sky.h6"], [12, "sky.h12"], [18, "sky.h18"]] };
+  if (nowHr >= 20) return { night: true, from: 20, to: 30, ticks: [[20, "sky.h20"], [24, "sky.h24"], [28, "sky.h4"]] };
+  return { night: true, from: -4, to: 6, ticks: [[-4, "sky.h20"], [0, "sky.h24"], [4, "sky.h4"]] };
+}
+function arcPoint(hr, w) {
+  const f = Math.min(1, Math.max(0, (hr - w.from) / (w.to - w.from)));
   const th = Math.PI * (1 - f);
   return { x: ARC.cx + ARC.rx * Math.cos(th), y: ARC.cy - ARC.ry * Math.sin(th) };
+}
+// Labels sit above the curve near the top and inside it on the steep sides, so the stroke never runs through them.
+function arcSide(hr, w) {
+  const f = Math.min(1, Math.max(0, (hr - w.from) / (w.to - w.from)));
+  const c = Math.cos(Math.PI * (1 - f));
+  return c < -0.55 ? "in-l" : c > 0.55 ? "in-r" : "top";
 }
 function renderSky(s) {
   const scene = $("#sky-scene");
   if (S.view !== "today" || !s) { scene.replaceChildren(); return; }
-  const now = hourOf(new Date());
-  const sun = arcPoint(now);
-  const start = arcPoint(ARC.from), end = arcPoint(ARC.to);
+  const nowDate = new Date();
+  const now = hourOf(nowDate);
+  const w = skyWindow(now);
+  const hrOf = (iso) => now + (new Date(iso) - nowDate) / 3600000;
+  const body = arcPoint(now, w);
+  const start = arcPoint(w.from, w), end = arcPoint(w.to, w);
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 1000 300");
   svg.setAttribute("preserveAspectRatio", "none");
   const path = (d, cls) => { const p = document.createElementNS(ns, "path"); p.setAttribute("d", d); if (cls) p.setAttribute("class", cls); return p; };
   svg.append(path(`M ${start.x} ${start.y} A ${ARC.rx} ${ARC.ry} 0 0 1 ${end.x} ${end.y}`),
-    path(`M ${start.x} ${start.y} A ${ARC.rx} ${ARC.ry} 0 0 1 ${sun.x.toFixed(1)} ${sun.y.toFixed(1)}`, "walked"));
-  const arc = h("div", { class: "arc", "aria-hidden": "true" }, svg,
-    h("span", { class: "sun", style: `left:${sun.x / 10}%;top:${sun.y / 3}%` }));
-  // Doses at the same minute share one point; the strongest state wins.
+    path(`M ${start.x} ${start.y} A ${ARC.rx} ${ARC.ry} 0 0 1 ${body.x.toFixed(1)} ${body.y.toFixed(1)}`, "walked"));
+  const arc = h("div", { class: `arc ${w.night ? "night" : "day"}`, "aria-hidden": "true" }, svg,
+    h("span", { class: w.night ? "sun moon" : "sun", style: `left:${body.x / 10}%;top:${body.y / 3}%` }));
+  for (const [hr, key] of w.ticks) {
+    const pt = arcPoint(hr, w);
+    if (Math.abs(pt.x - body.x) < 45 && Math.abs(pt.y - body.y) < 45) continue; // the sun or moon is standing on it
+    arc.append(h("span", { class: `arc-hour ${arcSide(hr, w)}`, style: `left:${pt.x / 10}%;top:${pt.y / 3}%` }, t(key)));
+  }
+  // Doses inside this half of the day. Same-minute doses share a point; the strongest state wins.
   const rank = { missed: 4, due: 3, wait: 2, skip: 1, done: 0 };
+  const seen = new Set();
+  const doses = [...s.today, s.next_dose].filter((c) => c && !seen.has(c.dose_id) && seen.add(c.dose_id));
   const points = new Map();
-  for (const c of s.today.filter((x) => !x.due_day || x.due_day === "Today")) {
-    const key = c.due_at_utc;
+  let nextOutside = null;
+  for (const c of doses) {
+    const hr = hrOf(c.due_at_utc);
     const st = doseState(c);
-    const p = points.get(key);
-    if (!p || rank[st] > rank[p.st]) points.set(key, { c, st });
+    if (hr < w.from - 0.01) continue;
+    if (hr > w.to) {
+      if (["wait", "due"].includes(st) && (!nextOutside || hr < nextOutside.hr)) nextOutside = { c, hr };
+      continue;
+    }
+    const p = points.get(c.due_at_utc);
+    if (!p || rank[st] > rank[p.st]) points.set(c.due_at_utc, { c, st, hr });
   }
-  // Labels sit above the curve near noon and inside it on the steep sides, so the stroke never runs through them.
-  const side = (hr) => {
-    const f = Math.min(1, Math.max(0, (hr - ARC.from) / (ARC.to - ARC.from)));
-    const c = Math.cos(Math.PI * (1 - f));
-    return c < -0.55 ? "in-l" : c > 0.55 ? "in-r" : "top";
-  };
-  for (const [hr, key] of [[6, "sky.h6"], [12, "sky.h12"], [18, "sky.h18"]]) {
-    const pt = arcPoint(hr);
-    arc.append(h("span", { class: `arc-hour ${side(hr)}`, style: `left:${pt.x / 10}%;top:${pt.y / 3}%` }, t(key)));
-  }
-  // The dose due at the sun is the sun itself. Any other dose that close slides along the arc so it stays visible.
-  const nowHr = now;
-  let sunDose = null;
+  // The dose due at the sun (or moon) is shown by the body itself; others that close slide clear (settleArc).
+  let atBody = null;
   for (const p of points.values()) {
-    p.hr = hourOf(new Date(p.c.due_at_utc));
-    const pt = arcPoint(p.hr);
-    p.atSun = Math.abs(pt.x - sun.x) < 30 && Math.abs(pt.y - sun.y) < 30;
-    if (p.atSun && (p.st === "due" || p.st === "missed") && (!sunDose || rank[p.st] > rank[sunDose.st])) sunDose = p;
+    const pt = arcPoint(p.hr, w);
+    p.atBody = Math.abs(pt.x - body.x) < 30 && Math.abs(pt.y - body.y) < 30;
+    if (p.atBody && (p.st === "due" || p.st === "missed") && (!atBody || rank[p.st] > rank[atBody.st])) atBody = p;
   }
   for (const p of points.values()) {
     const { c, st, hr } = p;
-    const pt = arcPoint(hr);
-    const cls = `arc-point ${st} ${side(hr)}${p === sunDose ? " at-sun" : ""}`;
-    // Every other dose may be nudged clear of the sun once the arc's real size is known (settleArc).
-    const near = p === sunDose ? null : { "data-hr": hr, "data-dir": hr <= nowHr ? -1 : 1 };
+    const pt = arcPoint(hr, w);
+    const cls = `arc-point ${st} ${arcSide(hr, w)}${p === atBody ? " at-sun" : ""}`;
+    const near = p === atBody ? null : { "data-hr": hr, "data-dir": hr <= now ? -1 : 1 };
     arc.append(h("span", { class: cls, style: `left:${pt.x / 10}%;top:${pt.y / 3}%`, ...near },
       h("span", { class: "arc-dot" }), h("span", { class: "arc-time" }, fmtClock(c.due_at_utc))));
   }
-  arc.dataset.sunHr = String(nowHr);
+  // The next dose in the other half of the day waits at the arc's end, so it is never out of sight.
+  if (nextOutside) {
+    arc.append(h("span", { class: "arc-next", style: `left:${end.x / 10}%;top:${end.y / 3}%` },
+      icon(w.night ? "sun" : "moon"), t(w.night ? "sky.morning" : "sky.tonight", { time: fmtClock(nextOutside.c.due_at_utc) })));
+  }
+  Object.assign(arc.dataset, { sunHr: String(now), from: String(w.from), to: String(w.to) });
   scene.replaceChildren(h("div", { class: "scene" }, greeting(s), arc));
   settleArc(arc);
 }
 
-// Slide any dose that would touch the sun (disc + glow + a visible gap) along the arc, in real pixels,
+// Slide any dose that would touch the sun or moon (disc + glow + a visible gap) along the arc, in real pixels,
 // so it stays a dot at its own place whatever the screen width.
 function settleArc(arc) {
   if (!arc || !arc.isConnected) return;
   const w = arc.clientWidth, ht = arc.clientHeight;
   if (!w || !ht) return;
+  const win = { from: Number(arc.dataset.from), to: Number(arc.dataset.to) };
   const rem = parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
   const clear = 3.9 * rem; // disc 1.7 + glow .7 + dot .6 + a .9rem gap
-  const sp = arcPoint(Number(arc.dataset.sunHr));
+  const sp = arcPoint(Number(arc.dataset.sunHr), win);
   const sx = (sp.x / 1000) * w, sy = (sp.y / 300) * ht;
   arc.querySelectorAll(".arc-point[data-hr]").forEach((el) => {
     const dir = Number(el.dataset.dir);
     let hr = Number(el.dataset.hr);
     for (let i = 0; i < 400; i++) {
-      const p = arcPoint(hr);
-      if (Math.hypot((p.x / 1000) * w - sx, (p.y / 300) * ht - sy) >= clear || hr <= ARC.from || hr >= ARC.to) {
+      const p = arcPoint(hr, win);
+      if (Math.hypot((p.x / 1000) * w - sx, (p.y / 300) * ht - sy) >= clear || hr <= win.from || hr >= win.to) {
         el.style.left = `${p.x / 10}%`;
         el.style.top = `${p.y / 3}%`;
         break;
@@ -647,9 +696,7 @@ function duePanel(group, s, demoted = false) {
     h("div", { class: "more-body" },
       h("div", { class: "due-actions" },
         h("button", { class: "btn btn-quiet", disabled: !!S.busy, onclick: () => act("ack", each("/api/reminders/ack")).then((x) => x && toast(t("toast.silenced"))) },
-          icon("bell-slash"), t("due.silence")),
-        review ? h("button", { class: "btn btn-quiet btn-danger", disabled: !!S.busy, onclick: () => act("close", each("/api/reminders/close")) },
-          icon("skip-forward"), t("due.close")) : null),
+          icon("bell-slash"), t("due.silence"))),
       h("p", { class: "due-help" }, help)));
   return h("section", { class: "due-panel", "aria-label": `${t("due.now")}: ${names}` },
     h("h2", { class: "due-name" }, title), when, h("p", { class: "due-sub" }, sub),
@@ -948,15 +995,129 @@ function renderNoTxn(s) {
 
 /* ---------------------------------------------------------------- Setup door */
 const DOOR_TABS = [["schedules", "pill"], ["setup", "pencil-simple-line"], ["history", "clock-counter-clockwise"], ["device", "cpu"]];
-function doorHead(active) {
+function doorHead(active, locked = false) {
+  const a = S.status && S.status.account;
   return h("div", { class: "door-head" },
-    h("h1", {}, t("care.title")),
-    h("nav", { class: "subtabs", "aria-label": t("care.title") }, DOOR_TABS.map(([v, ic]) =>
+    h("div", { class: "row" }, h("h1", {}, t("care.title")),
+      a && a.exists && !locked ? h("button", { class: "btn btn-quiet", type: "button", onclick: lockSetup }, icon("lock-simple"), t("lock.lock")) : null),
+    locked ? null : h("nav", { class: "subtabs", "aria-label": t("care.title") }, DOOR_TABS.map(([v, ic]) =>
       h("a", { href: `#${v}`, "aria-current": v === active ? "page" : null }, icon(ic), t(`nav.${v}`)))));
+}
+function setupLocked() {
+  const a = S.status && S.status.account;
+  return !!(a && a.exists && !a.unlocked);
 }
 function doorMain(active, ...kids) {
   renderSky(null);
-  setMain(doorHead(active), ...kids);
+  if (setupLocked()) { setMain(doorHead(active, true), unlockPanel()); return; }
+  setMain(doorHead(active), onboardNote(active), ...kids);
+}
+
+/* ---------------------------------------------------------------- account: first run, lock, unlock */
+// A local account protects Setup only. Today, taking a dose, reminders, STOP and Ask never need it.
+const ONBOARD_KEY = "dg-onboarding";
+const onboarding = () => { try { return localStorage.getItem(ONBOARD_KEY) === "1"; } catch { return false; } };
+const setOnboarding = (on) => { try { on ? localStorage.setItem(ONBOARD_KEY, "1") : localStorage.removeItem(ONBOARD_KEY); } catch {} };
+function needsWelcome(s) { return !!(s && s.account && !s.account.exists); }
+
+function onboardSteps(current) {
+  return h("ol", { class: "track onboard-track", "aria-label": t("welcome.title") }, ["welcome.s1", "welcome.s2", "welcome.s3", "welcome.s4"].map((k, i) =>
+    h("li", { class: i < current ? "done" : i === current ? "current" : "", "aria-current": i === current ? "step" : null },
+      h("span", { class: "dot", "aria-hidden": "true" }), h("span", { class: "name" }, t(k)))));
+}
+function onboardNote(active) {
+  if (!onboarding()) return null;
+  const name = (S.status && S.status.account && S.status.account.name) || "";
+  const [step, text] = active === "device" ? [3, t("onboard.dispenser")] : [1, t("onboard.face", { name })];
+  return h("section", { class: "panel onboard" }, onboardSteps(step), h("p", { class: "lede" }, text));
+}
+
+function renderWelcome() {
+  renderSky(null);
+  const name = h("input", { id: "acct-name", maxlength: 40, autocomplete: "name" });
+  const pw = h("input", { id: "acct-pw", type: "password", maxlength: 128, autocomplete: "new-password" });
+  const pw2 = h("input", { id: "acct-pw2", type: "password", maxlength: 128, autocomplete: "new-password" });
+  const err = h("p", { class: "field-error", role: "alert" });
+  async function create(ev) {
+    ev.preventDefault();
+    err.textContent = "";
+    const n = name.value.trim();
+    if (!n) return (err.textContent = t("account.name_needed"));
+    if (pw.value.length < 8) return (err.textContent = t("account.short"));
+    if (pw.value !== pw2.value) return (err.textContent = t("account.mismatch"));
+    try {
+      S.busy = "account";
+      await api("/api/account/create", { name: n, password: pw.value }, { noRetry: true });
+      setOnboarding(true);
+      S.setup = null;
+      S.prefillName = n;
+      S.busy = null;
+      if (S.status) S.status.account = { exists: true, name: n, unlocked: true };
+      S.keys = {};
+      go("setup");
+    } catch (e) {
+      S.busy = null;
+      err.textContent = friendlyError(e);
+    }
+  }
+  setMain(h("section", { class: "welcome" },
+    h("div", { class: "welcome-head" },
+      h("img", { class: "welcome-mark", src: "/static/brand/healthbox-mark.png", alt: "" }),
+      h("div", {}, h("h1", {}, t("welcome.title")), h("p", { class: "lede" }, t("welcome.sub")))),
+    onboardSteps(0),
+    h("form", { class: "panel welcome-form", onsubmit: create },
+      h("label", { class: "field", for: "acct-name" }, t("account.name"), name),
+      h("label", { class: "field", for: "acct-pw" }, t("account.password"), pw),
+      h("label", { class: "field", for: "acct-pw2" }, t("account.password2"), pw2),
+      h("p", { class: "muted" }, t("account.password_help")),
+      err,
+      h("div", { class: "row" }, h("button", { class: "btn btn-primary btn-big", type: "submit" }, t("account.create"), icon("arrow-right"))))));
+  name.focus();
+}
+
+function unlockPanel() {
+  const a = S.status.account;
+  const pw = h("input", { id: "unlock-pw", type: "password", maxlength: 128, autocomplete: "current-password" });
+  const err = h("p", { class: "field-error", role: "alert" });
+  async function unlock(ev) {
+    ev.preventDefault();
+    err.textContent = "";
+    try {
+      const r = await api("/api/account/unlock", { password: pw.value }, { noRetry: true });
+      S.status.account = { ...S.status.account, ...r, unlocked: true };
+      S.lastUnlocked = true;
+      toast(t("lock.unlocked"));
+      route();
+    } catch (e) {
+      const d = (e && e.data) || {};
+      const code = (d.reason_codes || [])[0];
+      err.textContent = code === "WRONG_PASSWORD" && d.attempts_left != null ? t("lock.wrong", { n: d.attempts_left })
+        : code === "TOO_MANY_ATTEMPTS" && d.locked_out_until ? t("lock.wait", { time: fmtClock(d.locked_out_until) })
+        : friendlyError(e);
+      pw.value = "";
+      pw.focus();
+    }
+  }
+  setTimeout(() => pw.isConnected && pw.focus(), 0);
+  return h("section", { class: "panel unlock" },
+    h("div", { class: "status-big" }, h("span", { class: "orb", "aria-hidden": "true" }, icon("lock-simple")),
+      h("div", {}, h("h2", {}, t("lock.title")), h("p", {}, t("lock.sub", { name: a.name || "" })))),
+    h("form", { class: "unlock-form", onsubmit: unlock },
+      h("label", { class: "field", for: "unlock-pw" }, t("account.password"), pw),
+      err,
+      h("div", { class: "row" }, h("button", { class: "btn btn-primary", type: "submit" }, icon("lock-key-open"), t("lock.unlock")))),
+    h("p", { class: "muted small", style: "margin-top:1rem" }, t("lock.forgot")));
+}
+
+async function lockSetup() {
+  try {
+    await api("/api/account/lock", {}, { noRetry: true });
+    if (S.status && S.status.account) S.status.account.unlocked = false;
+    S.lastUnlocked = false;
+    route();
+  } catch (e) {
+    toast(friendlyError(e), true);
+  }
 }
 
 /* ---------------------------------------------------------------- My medicines */
@@ -1011,7 +1172,7 @@ const setup = {
         plan_version_id: plan ? plan.plan_version_id : null,
         draft: {
           person_id: plan ? plan.person_id : (data.persons.at(-1) || {}).person_id || null,
-          timezone: plan ? plan.timezone : data.default_timezone,
+          timezone: plan ? plan.timezone : (LAPTOP_TZ && zoneOffset(LAPTOP_TZ) ? LAPTOP_TZ : data.default_timezone),
           timezone_confirmed: false, dst_reviewed: false,
           entries: plan && plan.entries.length && plan.plan_id !== "demo"
             ? plan.entries.map((e) => ({ schedule: "SCHEDULED", min_interval_hours: 4, max_per_day: 3, ...e, times: e.times || [], confirmed: false }))
@@ -1039,7 +1200,8 @@ function drawSetup() {
   const globalErr = st.errors.filter((e) => e.entry == null && e.field !== "person_id" && e.field !== "timezone").map((e) => h("div", { class: "field-error" }, e.message));
 
   // 1. Whose medicine: the face the camera checks.
-  const nameIn = h("input", { id: "enroll-name", placeholder: "e.g. Jackson", maxlength: 40 });
+  const acctName = (S.status && S.status.account && S.status.account.name) || S.prefillName || "";
+  const nameIn = h("input", { id: "enroll-name", placeholder: "e.g. Jackson", maxlength: 40, value: data.persons.length ? "" : acctName });
   const consent = h("input", { type: "checkbox", id: "consent" });
   const persons = data.persons.length
     ? h("div", { class: "stack", style: "gap:.5rem" }, data.persons.map((p) =>
@@ -1059,7 +1221,7 @@ function drawSetup() {
     persons,
     h("div", { class: "two", style: "margin-top:1.25rem" },
       h("div", { class: "stack", style: "gap:1rem" },
-        h("label", { class: "field", for: "enroll-name" }, "Add someone new", nameIn),
+        h("label", { class: "field", for: "enroll-name" }, onboarding() && !data.persons.length ? "Your name for the face check" : "Add someone new", nameIn),
         h("label", { class: "check" }, consent, h("span", {}, "This person agrees to have reference pictures taken and kept only on this laptop.")),
         h("div", { class: "row" }, enrollBtn),
         data.camera_simulated ? null : h("p", { class: "muted small" }, "While capturing, face the camera alone and turn slightly left and right.")),
@@ -1071,7 +1233,7 @@ function drawSetup() {
     if (!consent.checked) return toast("Tick the agreement box first.", true);
     if (!data.camera_simulated) toast("Capturing. Look at the camera and turn your head slightly left and right.");
     const r = await act("enroll", () => api("/api/enroll", { label: nameIn.value.trim(), consent: true }));
-    if (r) { d.person_id = r.person_id; toast("Face added."); setup.render(); }
+    if (r) { d.person_id = r.person_id; toast("Face added."); if (onboarding()) st.step = 1; setup.render(); }
   }
 
   // 2. Medicines
@@ -1090,7 +1252,10 @@ function drawSetup() {
     h("p", { class: "muted small", style: "margin-top:1rem" }, "Demo tokens only, never real pills. Colour and shape do not prove what a medicine is."));
 
   // 3. Confirm
-  const zones = Array.from(new Set([d.timezone, "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "UTC"]));
+  const zones = Array.from(new Set([d.timezone, LAPTOP_TZ, "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "UTC"].filter(Boolean)));
+  const tzWarn = tzDiffers(d.timezone) ? h("div", { class: "alert-box", style: "margin-top:1rem" }, icon("warning-circle"),
+    h("div", {}, h("div", { class: "what" }, `This laptop is on ${zoneCity(LAPTOP_TZ)} time, but the plan uses ${zoneCity(d.timezone)} time.`),
+      h("div", { class: "next" }, `Reminders will follow ${zoneCity(d.timezone)} time. Pick ${LAPTOP_TZ} unless that is really what you want.`))) : null;
   const tzSel = h("select", { onchange: (e) => { d.timezone = e.target.value; d.timezone_confirmed = false; drawSetup(); } },
     zones.map((z) => h("option", { value: z, selected: z === d.timezone }, z)));
   const dstBox = st.dst ? h("div", { class: "note", style: "margin-top:1rem" },
@@ -1108,6 +1273,7 @@ function drawSetup() {
     h("div", { class: "row" }, h("label", { class: "field" }, "Time zone", tzSel)),
     h("label", { class: "check", style: "margin-top:1rem" }, h("input", { type: "checkbox", checked: d.timezone_confirmed, onchange: (e) => (d.timezone_confirmed = e.target.checked) }),
       h("span", {}, `All times are local times in ${d.timezone}.`)),
+    tzWarn,
     errFor(undefined, "timezone"), st.errors.filter((e) => e.entry == null && e.field === "timezone").map((e) => h("div", { class: "field-error" }, e.message)),
     dstBox, globalErr,
     h("div", { class: "row", style: "margin-top:1.5rem" },
@@ -1133,7 +1299,7 @@ function drawSetup() {
       toast(`Confirmed. Version ${r.version}.`);
       S.setup = null;
       S.busy = null;
-      go("schedules");
+      go(onboarding() ? "device" : "schedules");
     } catch (e) {
       S.busy = null;
       st.errors = (e.data && e.data.errors) || [{ message: e.message }];
@@ -1179,7 +1345,21 @@ function applyLabelResult(e, r) {
     if (x.strength_text) { e.strength_text = x.strength_text; e.suggested.strength_text = true; }
     if (x.units_per_dose) { e.quantity = x.units_per_dose; e.suggested.quantity = true; }
   }
-  e.notes = [x && x.frequency_text ? `The label says: “${x.frequency_text}”. Choose the times yourself.` : null,
+  const sug = r.suggested_schedule;
+  if (sug) {
+    e.schedule = sug.schedule; e.suggested.schedule = true;
+    if (sug.schedule === "AS_NEEDED") {
+      if (sug.min_interval_hours) e.min_interval_hours = sug.min_interval_hours;
+      if (sug.max_per_day) e.max_per_day = sug.max_per_day;
+      e.suggested.limits = true;
+    } else if (sug.times && sug.times.length) {
+      e.times = [...sug.times]; e.suggested.times = true;
+    }
+  }
+  e.notes = [x && x.frequency_text
+      ? sug ? `The label says: “${x.frequency_text}”. The dashed ${sug.schedule === "AS_NEEDED" ? "limits are" : "times are"} a suggestion from that; change them if your doctor said otherwise.`
+        : `The label says: “${x.frequency_text}”. Choose the times yourself.`
+      : null,
     x && x.ambiguity_notes, r.note].filter(Boolean).join(" ");
 }
 
@@ -1335,7 +1515,7 @@ function entryEditor(e, i, data, errFor) {
   } else {
     const timeIn = h("input", { type: "time", value: "08:00", "aria-label": "Add a time" });
     when = h("div", { class: "times" }, h("span", { class: "strong" }, "Times"),
-      e.times.map((tm, k) => h("span", { class: "time-chip" }, fmtTime(tm),
+      e.times.map((tm, k) => h("span", { class: `time-chip ${e.suggested && e.suggested.times ? "suggested" : ""}` }, fmtTime(tm),
         h("button", { type: "button", "aria-label": `Remove ${fmtTime(tm)}`, onclick: () => { e.times.splice(k, 1); e.confirmed = false; drawSetup(); } }, icon("x")))),
       timeIn,
       h("button", { class: "btn btn-quiet", type: "button", onclick: () => { const v = timeIn.value; if (v && !e.times.includes(v)) { e.times.push(v); e.times.sort(); e.confirmed = false; drawSetup(); } } }, icon("plus"), "Add time"));
@@ -1426,7 +1606,7 @@ function detailPanel() {
     det.commands.length ? [h("h3", { style: "margin:1.5rem 0 .5rem" }, "Dispenser commands"),
       h("ul", { class: "events" }, det.commands.map((m) => h("li", {}, h("span", { class: "muted tnum" }, `#${m.command_id}`),
         h("span", {}, h("span", { class: "k" }, m.kind), m.channel ? ` ${m.channel}` : "", h("span", { class: "muted" }, `. ${m.state.toLowerCase()}${m.detail ? ", " + m.detail : ""}`)))))] : null,
-    h("p", { class: "muted small", style: "margin-top:1.25rem" }, "Unlocked, collected and \"you said you took it\" are kept separately. DoseGuard never sees you swallow."));
+    h("p", { class: "muted small", style: "margin-top:1.25rem" }, "Unlocked, collected and \"you said you took it\" are kept separately. Healthbox never sees you swallow."));
 }
 
 /* ---------------------------------------------------------------- Dispenser */
@@ -1469,7 +1649,7 @@ const device = {
           h("p", { class: "muted", style: "margin:.4rem 0 1rem" }, "Arming lasts until the dispenser restarts, disconnects, stops or reports a problem."),
           h("label", { class: "check" }, armChk, h("span", {}, "I looked it over: tray top and panels fixed, door closed, no way to reach into the tray.")),
           h("div", { class: "row", style: "margin-top:1rem" },
-            h("button", { class: "btn btn-primary", disabled: !!S.busy, onclick: () => act("arm", () => api("/api/device/arm", { inspected: armChk.checked })).then((x) => x && toast("Dispenser armed.")) }, "Arm dispenser")));
+            h("button", { class: "btn btn-primary", disabled: !!S.busy, onclick: () => act("arm", () => api("/api/device/arm", { inspected: armChk.checked })).then((x) => { if (!x) return; if (onboarding()) { setOnboarding(false); toast(t("onboard.done")); go("today"); } else toast("Dispenser armed."); }) }, "Arm dispenser")));
 
     // Recovery is dangerous enough to stand apart from everyday buttons.
     const resetChk = h("input", { type: "checkbox" });
@@ -1674,6 +1854,7 @@ function route() {
   const door = $("#care-link");
   if (DOOR_VIEWS.includes(S.view)) door.setAttribute("aria-current", "page"); else door.removeAttribute("aria-current");
   S.keys = {};
+  if (needsWelcome(S.status)) { S.keys.__welcome = 1; renderWelcome(); main.focus({ preventScroll: true }); return; }
   if (S.view !== "today") renderSky(null);
   if (S.view === "setup") setup.render();
   else if (S.status) VIEWS[S.view].render(S.status);

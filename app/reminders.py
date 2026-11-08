@@ -243,22 +243,6 @@ class ReminderService:
             return {"reminder_id": reminder_id, "state": "ACKNOWLEDGED"}
         return self._idempotent(request_id, "reminders/ack", run)
 
-    def close_reviewed(self, request_id: str, reminder_id: str) -> dict:
-        """Close a reminder after review without taking the dose. Never dispenses a catch-up."""
-        def run(conn):
-            r = self._load(conn, reminder_id)
-            if r["state"] == "CLOSED":
-                raise WorkflowError(409, "INVALID_TRANSITION", "Already closed.")
-            if r["workflow_state"] != "NOT_STARTED":
-                raise WorkflowError(409, "ALREADY_STARTED")
-            now = self.store.now()
-            conn.execute("UPDATE reminders SET state='CLOSED', closed_at=?, close_reason='REVIEWED_NOT_TAKEN', next_alert_at=NULL,"
-                         " updated_at=? WHERE reminder_id=?", (now, now, reminder_id))
-            conn.execute("UPDATE doses SET outcome='SKIPPED_AFTER_REVIEW', updated_at=? WHERE dose_id=?", (now, r["dose_id"]))
-            self.store.event(conn, "REMINDER_CLOSED", dose_id=r["dose_id"], reminder_id=reminder_id, reason="REVIEWED_NOT_TAKEN")
-            return {"reminder_id": reminder_id, "state": "CLOSED"}
-        return self._idempotent(request_id, "reminders/close", run)
-
     def mark_taken_self_report(self, request_id: str, dose_id: str) -> dict:
         """REMINDER_ONLY entries: an explicitly unverified self report. Never sets camera checks."""
         def run(conn):
