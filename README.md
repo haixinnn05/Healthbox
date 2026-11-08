@@ -221,8 +221,9 @@ Give `docs/serial-protocol.md` to the firmware owner. The reference sketch in `f
    ```
    Conformance prints PASS/FAIL per rule. Trials write a CSV to `data/bench/` with cycle times and,
    with `--ask`, how many tokens actually fell.
-2. **Run the app:** `HARDWARE_MODE=serial SERIAL_PORT=... ./run.sh`. Setup → Dispenser shows session,
-   firmware, heartbeat, switches, revision and faults.
+2. **Run the app:** `./run_box.sh` checks the Mac's network, the tray camera and the motor board, says in
+   plain words what to fix, then starts the app on the real box (`./run_box.sh --check` only checks).
+   Setup → Dispenser shows session, firmware, heartbeat, switches, revision and faults.
 
 ### Serial mode without hardware
 `scripts/virtual_controller.py` puts the simulated controller behind a virtual serial port, so the

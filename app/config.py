@@ -66,7 +66,7 @@ class Settings:
     check_min_span_s: float = 1.0
     check_timeout_s: float = 5.0
     face_max_age_s: float = 2.0
-    tray_max_age_s: float = 15.0
+    tray_max_age_s: float = 60.0  # the box is latched and any door or rotor change voids the count; 15 s was too short to use
     face_match_threshold: float = 0.363  # SFace cosine similarity, calibrate on site
     tray_token_area_px: int = 900  # area of one token in the 400x300 warped tray
     tray_min_area_px: int = 150
@@ -150,7 +150,7 @@ class Settings:
             face_camera_index=_int("FACE_CAMERA_INDEX", 0),
             tray_camera_url=_str("TRAY_CAMERA_URL", ""),
             face_max_age_s=_float("FACE_MAX_AGE_S", 2.0),
-            tray_max_age_s=_float("TRAY_MAX_AGE_S", 15.0),
+            tray_max_age_s=_float("TRAY_MAX_AGE_S", 60.0),
             face_match_threshold=_float("FACE_MATCH_THRESHOLD", 0.363),
             tray_token_area_px=_int("TRAY_TOKEN_AREA_PX", 900),
             snooze_minutes=_int("SNOOZE_MINUTES", 5),
